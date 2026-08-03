@@ -47,9 +47,11 @@ class MusicBot(commands.Bot):
 
         from .cogs.music import MusicCog
         from .cogs.library import LibraryCog
+        from .cogs.cookies import CookiesCog
 
         await self.add_cog(MusicCog(self))
         await self.add_cog(LibraryCog(self))
+        await self.add_cog(CookiesCog(self))
 
         await self._sync_commands()
 

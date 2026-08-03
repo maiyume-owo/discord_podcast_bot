@@ -497,5 +497,10 @@ class MusicCog(commands.Cog, name="Music"):
         elif dl.last_report is not None:
             ago = int(time.time() - (dl.last_run or time.time()))
             sync_state += f" • last run {ago // 60}m ago: {dl.last_report.summary()}"
+        if dl.bot_check_blocked:
+            sync_state += (
+                "\n🚫 **blocked by YouTube** — sign-in required. "
+                "Owner: run `/cookies guide`"
+            )
         embed.add_field(name="Downloader", value=sync_state, inline=False)
         await interaction.followup.send(embed=embed)

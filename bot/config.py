@@ -122,10 +122,10 @@ class Config:
         db_path = Path(_get("DB_PATH", str(data_dir / "library.db"))).expanduser()
         cache_dir = Path(_get("CACHE_DIR", str(data_dir / "cache"))).expanduser()
 
+        # Keep the configured path even when the file is absent, so cookies
+        # dropped in at runtime (/cookies upload) take effect without a restart.
         cookies_raw = _get("COOKIES_FILE", str(data_dir / "cookies.txt"))
         cookies_file = Path(cookies_raw).expanduser() if cookies_raw else None
-        if cookies_file is not None and not cookies_file.exists():
-            cookies_file = None
 
         return cls(
             token=token,

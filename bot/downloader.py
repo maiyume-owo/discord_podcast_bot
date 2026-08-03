@@ -20,6 +20,33 @@ log = logging.getLogger(__name__)
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
 
+# Cookie names YouTube sets only for a signed-in session.
+AUTH_COOKIE_NAMES = {
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "LOGIN_INFO",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+}
+
+_BOT_CHECK_MARKERS = (
+    "sign in to confirm",
+    "not a bot",
+    "confirm your age",
+    "use --cookies",
+)
+
+
+def is_bot_check(message: str) -> bool:
+    low = message.lower()
+    return any(marker in low for marker in _BOT_CHECK_MARKERS)
+
+
 UNAVAILABLE_TITLES = {
     "[Private video]",
     "[Deleted video]",
@@ -83,6 +110,9 @@ class Downloader:
         self.last_report: SyncReport | None = None
         self.last_run: float | None = None
         self.on_new_tracks: Any = None  # optional async callback()
+        # Set when YouTube demands sign-in; cleared once a download succeeds.
+        self.bot_check_blocked = False
+        self.cookie_browser = cfg.cookies_from_browser
 
     # ------------------------------------------------------------ yt-dlp opts
 
@@ -96,12 +126,16 @@ class Downloader:
             "socket_timeout": 30,
             "logger": _YtdlLogger(),
         }
-        if self.cfg.cookies_file:
+        if self.cookies_available():
             opts["cookiefile"] = str(self.cfg.cookies_file)
-        elif self.cfg.cookies_from_browser:
-            spec = self.cfg.cookies_from_browser.split(":")
+        elif self.cookie_browser:
+            spec = self.cookie_browser.split(":")
             opts["cookiesfrombrowser"] = tuple(spec) + (None,) * (4 - len(spec))
         return opts
+
+    def cookies_available(self) -> bool:
+        path = self.cfg.cookies_file
+        return bool(path and path.exists() and path.stat().st_size > 0)
 
     def _flat_opts(self) -> dict[str, Any]:
         opts = self._base_opts()
@@ -265,8 +299,24 @@ class Downloader:
         try:
             info = await asyncio.to_thread(self._download_sync, video_id)
         except Exception as exc:  # noqa: BLE001
-            log.warning("download failed for %s (%s): %s", video_id, title, exc)
-            await self.db.mark_failed(video_id, str(exc))
+            message = str(exc)
+            if is_bot_check(message):
+                if not self.bot_check_blocked:
+                    log.error(
+                        "YouTube is demanding sign-in — downloads are blocked until "
+                        "cookies are supplied. Run /cookies guide in Discord."
+                    )
+                self.bot_check_blocked = True
+                # Don't burn the retry budget on something cookies will fix.
+                await self.db.mark_failed(
+                    video_id, "blocked: YouTube sign-in required (needs cookies)"
+                )
+                await self.db.execute(
+                    "UPDATE tracks SET attempts = 0 WHERE video_id = ?", (video_id,)
+                )
+                return False
+            log.warning("download failed for %s (%s): %s", video_id, title, message)
+            await self.db.mark_failed(video_id, message)
             return False
         finally:
             self.current = None
@@ -276,6 +326,7 @@ class Downloader:
             await self.db.mark_failed(video_id, "post-processing produced no mp3 file")
             return False
 
+        self.bot_check_blocked = False  # a success proves we're not blocked
         duration = info.get("duration") if info else None
         await self.db.mark_downloaded(
             video_id,
@@ -296,6 +347,168 @@ class Downloader:
         if mp3.exists() and mp3.stat().st_size > 0:
             return mp3
         return None
+
+    # --------------------------------------------------------------- cookies
+
+    def cookie_status(self) -> dict[str, Any]:
+        path = self.cfg.cookies_file
+        out: dict[str, Any] = {
+            "path": str(path) if path else "(not configured)",
+            "exists": False,
+            "size": 0,
+            "age_hours": None,
+            "youtube_cookies": 0,
+            "auth_cookies": [],
+            "browser": self.cookie_browser,
+            "blocked": self.bot_check_blocked,
+        }
+        if not (path and path.exists()):
+            return out
+        stat = path.stat()
+        out["exists"] = True
+        out["size"] = stat.st_size
+        out["age_hours"] = (time.time() - stat.st_mtime) / 3600
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return out
+        names: list[str] = []
+        for line in text.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7 or "youtube.com" not in parts[0]:
+                continue
+            out["youtube_cookies"] += 1
+            if parts[5] in AUTH_COOKIE_NAMES:
+                names.append(parts[5])
+        out["auth_cookies"] = sorted(set(names))
+        return out
+
+    @staticmethod
+    def validate_cookie_text(text: str) -> tuple[bool, str]:
+        """Check an uploaded file really is a Netscape jar with YouTube auth."""
+        lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return False, "The file is empty."
+        data = [ln for ln in lines if not ln.startswith("#")]
+        if not data:
+            return False, "No cookie entries found — only comments."
+        yt = [ln for ln in data if "youtube.com" in ln.split("\t")[0]]
+        if not yt:
+            return False, (
+                "No `youtube.com` cookies in this file. Make sure you exported "
+                "**while on a YouTube page**, not another site."
+            )
+        malformed = [ln for ln in yt if len(ln.split("\t")) < 7]
+        if malformed:
+            return False, (
+                "This isn't Netscape format (columns must be tab-separated). "
+                "Re-export choosing **Netscape**, not JSON."
+            )
+        found = {ln.split("\t")[5] for ln in yt}
+        if not (found & AUTH_COOKIE_NAMES):
+            return False, (
+                "No login cookies present — you were exported as a signed-out "
+                "visitor. Log in to YouTube first, then export."
+            )
+        return True, f"{len(yt)} YouTube cookies, logged in ✓"
+
+    async def install_cookie_text(self, text: str) -> tuple[bool, str]:
+        ok, message = self.validate_cookie_text(text)
+        if not ok:
+            return False, message
+        path = self.cfg.cookies_file
+        if path is None:
+            return False, "COOKIES_FILE is not configured."
+
+        def _write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            path.chmod(0o600)  # it's a live session credential
+
+        await asyncio.to_thread(_write)
+        self.bot_check_blocked = False
+        log.info("installed new cookie jar (%s)", message)
+        return True, message
+
+    async def import_browser_cookies(
+        self, browser: str, profile: str | None = None
+    ) -> tuple[bool, str]:
+        """Best-effort auto-extraction. Unreliable for YouTube, see /cookies guide."""
+        path = self.cfg.cookies_file
+        if path is None:
+            return False, "COOKIES_FILE is not configured."
+
+        def _extract() -> int:
+            from yt_dlp.cookies import extract_cookies_from_browser
+            from yt_dlp.utils import YoutubeDLCookieJar
+
+            jar = extract_cookies_from_browser(browser, profile)
+            keep = YoutubeDLCookieJar()
+            count = 0
+            for cookie in jar:
+                if "youtube.com" in cookie.domain or "google.com" in cookie.domain:
+                    keep.set_cookie(cookie)
+                    count += 1
+            path.parent.mkdir(parents=True, exist_ok=True)
+            keep.save(str(path))
+            path.chmod(0o600)
+            return count
+
+        try:
+            count = await asyncio.to_thread(_extract)
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+        if count == 0:
+            return False, (
+                f"Found no YouTube cookies in **{browser}**. Are you logged in "
+                "in that browser, on this machine?"
+            )
+        self.bot_check_blocked = False
+        return True, f"Imported {count} cookie(s) from {browser}."
+
+    async def clear_cookies(self) -> bool:
+        path = self.cfg.cookies_file
+        if path is None or not path.exists():
+            return False
+        await asyncio.to_thread(path.unlink)
+        return True
+
+    async def test_cookies(self, video_id: str | None = None) -> tuple[bool, str]:
+        """Ask YouTube for one video's metadata and see if it lets us through."""
+        if video_id is None:
+            row = await self.db.fetchone(
+                "SELECT video_id FROM tracks WHERE status IN ('pending', 'failed') "
+                "LIMIT 1"
+            )
+            if row is None:
+                row = await self.db.fetchone("SELECT video_id FROM tracks LIMIT 1")
+            if row is None:
+                return False, "No tracks in the library to test with — add a playlist."
+            video_id = row["video_id"]
+
+        def _probe() -> dict[str, Any]:
+            opts = self._base_opts()
+            opts["skip_download"] = True
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}", download=False
+                ) or {}
+
+        try:
+            info = await asyncio.to_thread(_probe)
+        except Exception as exc:  # noqa: BLE001
+            text = str(exc)
+            if is_bot_check(text):
+                self.bot_check_blocked = True
+                return False, (
+                    "YouTube is still demanding sign-in. The cookies are missing, "
+                    "expired, or were exported from a signed-out session."
+                )
+            return False, f"Failed on `{video_id}`: {text[:250]}"
+        self.bot_check_blocked = False
+        return True, f"YouTube accepted the request — read **{info.get('title', video_id)}**"
 
     # ----------------------------------------------------------------- prune
 

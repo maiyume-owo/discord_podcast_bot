@@ -55,17 +55,39 @@ up to an hour.
 
 ---
 
-## Cookies (optional)
+## Cookies
 
-Only needed for playlists or videos that aren't publicly viewable — private/unlisted
-playlists, Watch Later (`WL`), Liked videos (`LL`), and age-restricted or region-locked
-videos. Public playlists need nothing.
+Needed when YouTube says **"Sign in to confirm you're not a bot"** (it throttles
+datacenter and high-volume IPs), and for anything not publicly viewable: private/unlisted
+playlists, Watch Later (`WL`), Liked videos (`LL`), age-restricted videos.
 
-Export with a "Get cookies.txt LOCALLY" browser extension in **Netscape** format and save
-to `data/cookies.txt`. It's picked up automatically if present, ignored if not.
+Run **`/cookies guide`** in Discord for the walkthrough. The short version:
 
-> Keep that file private — it's a live YouTube session. Download only what you have
-> access to, and stay within YouTube's Terms of Service.
+1. Install a **"Get cookies.txt LOCALLY"** browser extension.
+2. Open a **private/incognito** window → log in to YouTube → in that same tab visit
+   `youtube.com/robots.txt` → export cookies → **close the window**.
+3. Save the file to `data/cookies.txt`, or use `/cookies upload`.
+4. `/cookies test`, then `/sync`.
+
+Step 2's order matters: YouTube rotates cookies on any open tab, which silently
+invalidates a normal export. Closing the private window stops the session being rotated
+out from under the bot. For the same reason `--cookies-from-browser`
+(`/cookies browser`) is unreliable for YouTube — it exists as a fallback, and can't work
+at all in Docker or WSL where the bot can't see your browser.
+
+| Command | |
+|---|---|
+| `/cookies guide` | Step-by-step instructions |
+| `/cookies status` | Installed? how old? logged in? |
+| `/cookies test` | Ask YouTube for a video and see if it lets us through |
+| `/cookies upload <file>` | Attach a `cookies.txt` |
+| `/cookies browser <name>` | Best-effort import from a local browser |
+| `/cookies clear` | Delete the stored jar |
+
+> **Use a throwaway Google account.** Bulk downloading risks the account being
+> rate-limited or banned. The file is a live login session — it's stored `0600`, kept out
+> of git, and `/cookies` replies are ephemeral. Prefer copying it onto the host directly
+> over uploading it through Discord.
 
 ---
 
@@ -99,6 +121,7 @@ video id is scoped identically, so there's no way to request something that isn'
 
 | Command | What it does |
 |---|---|
+| `/cookies guide\|status\|test\|upload\|browser\|clear` | YouTube authentication |
 | `/playlist add <url>` | Track a playlist |
 | `/playlist remove <playlist> [delete_files]` | Stop tracking it |
 | `/playlist toggle <playlist> <enabled>` | Keep the files, pause syncing |
@@ -201,7 +224,8 @@ runs can skip the cookie file with `COOKIES_FROM_BROWSER=firefox`.
 | Joins but silence | `libopus` missing, or no **Speak** permission. |
 | `/status` shows 0 downloaded | Sync still running; check `/playlist list` for a per-playlist error. |
 | Playlist reads fine, downloads all fail | Usually an outdated `yt-dlp`: `docker compose build --no-cache`, or `pip install -U yt-dlp`. |
-| Private playlist won't read | Needs `data/cookies.txt`. |
+| `Sign in to confirm you're not a bot` | YouTube wants cookies — run `/cookies guide`. Failed tracks auto-retry once cookies land. |
+| Private playlist won't read | Needs `data/cookies.txt` — see `/cookies guide`. |
 | Bot sits in an empty channel doing nothing | Working as intended — it holds the channel and resumes when you join. |
 
 `LOG_LEVEL=DEBUG` for verbose yt-dlp and voice logging.
