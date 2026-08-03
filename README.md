@@ -194,11 +194,18 @@ re-download.
 
 ## Running without Docker
 
-Needs Python 3.11+, `ffmpeg`, and `libopus`:
+Needs Python 3.11+, `ffmpeg`, `libopus`, and a JavaScript runtime:
 
 ```bash
 sudo apt install ffmpeg libopus0 python3-venv
 ```
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+Deno solves YouTube's "n" signature challenge. Without it YouTube returns no audio
+formats and every download fails — it must be on `PATH`.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -223,6 +230,7 @@ runs can skip the cookie file with `COOKIES_FROM_BROWSER=firefox`.
 | Slash commands missing | `GUILD_IDS` unset → slow global sync, or the 403 above. |
 | Joins but silence | `libopus` missing, or no **Speak** permission. |
 | `/status` shows 0 downloaded | Sync still running; check `/playlist list` for a per-playlist error. |
+| `Requested format is not available` on every video | YouTube's "n" challenge needs a JS runtime. Install **deno** and `pip install yt-dlp-ejs` (the Docker image includes both). Startup logs which runtime it found. |
 | Playlist reads fine, downloads all fail | Usually an outdated `yt-dlp`: `docker compose build --no-cache`, or `pip install -U yt-dlp`. |
 | `Sign in to confirm you're not a bot` | YouTube wants cookies — run `/cookies guide`. Failed tracks auto-retry once cookies land. |
 | Private playlist won't read | Needs `data/cookies.txt` — see `/cookies guide`. |

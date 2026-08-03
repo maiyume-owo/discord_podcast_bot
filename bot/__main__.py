@@ -25,6 +25,31 @@ def setup_logging() -> None:
     logging.getLogger("discord.gateway").setLevel(logging.ERROR)
 
 
+def check_js_runtime() -> str | None:
+    """yt-dlp needs a JS runtime + the EJS solver to get past YouTube's "n"
+    challenge. Without both, YouTube returns no audio formats at all and every
+    download fails with "Requested format is not available"."""
+    import shutil
+
+    runtime = next(
+        (r for r in ("deno", "node", "quickjs", "bun") if shutil.which(r)), None
+    )
+    try:
+        import yt_dlp_ejs  # noqa: F401
+
+        solver = True
+    except ImportError:
+        solver = False
+    if runtime and solver:
+        return runtime
+    missing = []
+    if not runtime:
+        missing.append("a JS runtime (install deno)")
+    if not solver:
+        missing.append("the solver (pip install yt-dlp-ejs)")
+    return None if missing else runtime
+
+
 def ensure_opus() -> bool:
     """discord.py loads libopus lazily, so is_loaded() is False until a voice
     connection needs it. Load it eagerly to report the truth at startup."""
@@ -55,6 +80,17 @@ async def amain() -> None:
         log.warning(
             "libopus could not be loaded — the bot will join voice but stay "
             "silent. Install it with: sudo apt install libopus0"
+        )
+
+    runtime = check_js_runtime()
+    if runtime:
+        log.info("JS runtime for YouTube challenges: %s", runtime)
+    else:
+        log.warning(
+            "No JavaScript runtime and/or yt-dlp-ejs found. YouTube will serve "
+            "no audio formats and every download will fail with 'Requested "
+            "format is not available'. Fix: install deno and "
+            "`pip install yt-dlp-ejs`."
         )
 
     bot = MusicBot(cfg)
