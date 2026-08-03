@@ -1,0 +1,16 @@
+services:
+  music-bot:
+    build: .
+    image: ytvc-bot:latest
+    container_name: ytvc-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # mp3s, sqlite library, yt-dlp cache and cookies.txt all live here
+      - ./data:/data
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

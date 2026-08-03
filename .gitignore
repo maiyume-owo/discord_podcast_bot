@@ -1,0 +1,83 @@
+# ---------------------------------------------------------------- secrets ---
+# The live config: bot token, owner IDs, channel IDs. Never commit.
+.env
+.env.local
+.env.*.local
+
+# The templates ARE meant to be committed.
+!.env.example
+!.env.example.filled
+
+# A YouTube cookie jar is a live login session for your account.
+cookies.txt
+*.cookies
+cookies*.txt
+
+# ------------------------------------------------------------------ state ---
+# Downloaded audio, the SQLite index, and the yt-dlp cache. Large and
+# reproducible — re-running /sync rebuilds all of it.
+data/
+/audio/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Stray media if DATA_DIR is pointed somewhere odd
+*.mp3
+*.m4a
+*.webm
+*.opus
+*.part
+*.ytdl
+
+# ----------------------------------------------------------------- python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# virtualenvs
+.venv/
+venv/
+ENV/
+env/
+
+# tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ------------------------------------------------------------------- editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# ---------------------------------------------------------------------- os ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------- runtime ---
+*.log
+logs/
+*.pid

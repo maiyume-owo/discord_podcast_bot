@@ -1,0 +1,11 @@
+.env
+data/
+*.md
+!README.md
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.git/
+.gitignore
+cookies.txt
