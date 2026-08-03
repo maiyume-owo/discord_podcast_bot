@@ -386,6 +386,40 @@ class Downloader:
         return out
 
     @staticmethod
+    def cookie_header_to_netscape(header: str, domain: str = ".youtube.com") -> str:
+        """Convert a `name=value; name=value` Cookie header into a Netscape jar.
+
+        Accepts what DevTools gives you: with or without a leading `Cookie:`,
+        semicolon- or newline-separated.
+        """
+        header = header.strip()
+        for prefix in ("cookie:", "Cookie:", "COOKIE:"):
+            if header.startswith(prefix):
+                header = header[len(prefix) :]
+                break
+        header = header.replace("\r", "\n").replace("\n", ";")
+
+        expiry = int(time.time()) + 365 * 24 * 3600
+        lines = [
+            "# Netscape HTTP Cookie File",
+            "# Converted by ytvc-bot from a pasted Cookie header",
+        ]
+        seen: set[str] = set()
+        for part in header.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            name, _, value = part.partition("=")
+            name, value = name.strip(), value.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            lines.append(
+                "\t".join([domain, "TRUE", "/", "TRUE", str(expiry), name, value])
+            )
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
     def validate_cookie_text(text: str) -> tuple[bool, str]:
         """Check an uploaded file really is a Netscape jar with YouTube auth."""
         lines = [ln for ln in text.splitlines() if ln.strip()]

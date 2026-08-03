@@ -31,6 +31,87 @@ BROWSERS = [
 ]
 
 
+CONSOLE_ONLY_HINT = (
+    "**The login cookies are missing — and a `document.cookie` paste can never "
+    "contain them.**\n\n"
+    "YouTube marks `SID`, `HSID`, `SSID`, `SAPISID` and `__Secure-*PSID` as "
+    "**HttpOnly**, which browsers deliberately hide from JavaScript. What you "
+    "pasted (`YSC`, `VISITOR_INFO1_LIVE`, `PREF`, `GPS`…) is just the "
+    "signed-out visitor set.\n\n"
+    "__Get the real one from the Network tab instead:__\n"
+    "① `F12` → **Network** tab\n"
+    "② Reload youtube.com\n"
+    "③ Click the first `www.youtube.com` request\n"
+    "④ **Headers** → **Request Headers** → find `cookie:`\n"
+    "⑤ Right-click it → **Copy value** _(not `document.cookie`)_\n\n"
+    "That header is sent by the browser, so it includes the HttpOnly cookies. "
+    "Make sure you're logged in first."
+)
+
+
+class CookiePasteModal(discord.ui.Modal, title="Paste YouTube cookies"):
+    """A modal keeps a live session out of the visible command invocation."""
+
+    header = discord.ui.TextInput(
+        label="Cookie header",
+        style=discord.TextStyle.paragraph,
+        placeholder="SID=...; HSID=...; SAPISID=...; LOGIN_INFO=...",
+        max_length=4000,
+        required=True,
+    )
+
+    def __init__(self, cog: "CookiesCog") -> None:
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        dl = self.cog.dl
+        netscape = dl.cookie_header_to_netscape(str(self.header.value))
+
+        ok, message = dl.validate_cookie_text(netscape)
+        if not ok:
+            body = message
+            if "login cookies" in message.lower():
+                body = CONSOLE_ONLY_HINT
+            await interaction.followup.send(
+                embed=err_embed(body, "Those cookies won't authenticate"),
+                ephemeral=True,
+            )
+            return
+
+        ok, message = await dl.install_cookie_text(netscape)
+        if not ok:
+            await interaction.followup.send(
+                embed=err_embed(message, "Rejected"), ephemeral=True
+            )
+            return
+
+        requeued = await self.cog.bot.db.reset_failures()
+        ok_test, test_message = await dl.test_cookies()
+        embed = ok_embed(
+            f"Converted and installed — {message}\n"
+            f"Re-queued **{requeued}** previously failed track(s).\n\n"
+            f"{'✅' if ok_test else '⚠️'} {test_message}",
+            "Cookies updated",
+        )
+        if ok_test:
+            embed.set_footer(text="Run /sync to start downloading.")
+        else:
+            embed.color = WARN
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception
+    ) -> None:
+        log.exception("cookie paste failed")
+        message = err_embed(f"Something went wrong: {truncate(str(error), 300)}")
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=message, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=message, ephemeral=True)
+
+
 class CookiesCog(commands.Cog, name="Cookies"):
     def __init__(self, bot) -> None:
         self.bot = bot
@@ -97,15 +178,26 @@ class CookiesCog(commands.Cog, name="Cookies"):
             value=(
                 "**Best (self-hosted):** copy it straight onto the host — nothing "
                 f"leaves your machine:\n```\n{self.cfg.cookies_file}\n```\n"
-                "**Or:** `/cookies upload` and attach the file. ⚠️ That sends your "
-                "session through Discord's servers — prefer doing it in a DM with "
-                "the bot, and delete the message afterwards."
+                "**Or:** `/cookies upload` and attach the file, or `/cookies paste` "
+                "for a Cookie header. ⚠️ Both send your session through Discord — "
+                "prefer a DM with the bot."
             ),
             inline=False,
         )
         embed.add_field(
             name="4 · Verify",
             value="`/cookies status` then `/cookies test`, then `/sync`.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Alternative · paste from DevTools",
+            value=(
+                "`/cookies paste`, then use `F12` → **Network** → reload → click a "
+                "`www.youtube.com` request → **Request Headers** → right-click "
+                "`cookie:` → **Copy value**.\n"
+                "⚠️ Do **not** use `document.cookie` in the Console — the login "
+                "cookies are HttpOnly and it cannot read them."
+            ),
             inline=False,
         )
         embed.set_footer(
@@ -223,6 +315,16 @@ class CookiesCog(commands.Cog, name="Cookies"):
 
         if interaction.guild is not None:
             log.info("cookies replaced by %s", interaction.user)
+
+    # ------------------------------------------------------------------ paste
+
+    @group.command(
+        name="paste", description="Paste a Cookie header copied from DevTools"
+    )
+    async def paste(self, interaction: discord.Interaction) -> None:
+        if await self._deny_non_owner(interaction):
+            return
+        await interaction.response.send_modal(CookiePasteModal(self))
 
     # ---------------------------------------------------------------- browser
 
