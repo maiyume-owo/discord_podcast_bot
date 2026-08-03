@@ -1,4 +1,9 @@
-"""Playback commands: play / queue / skip / summon / status."""
+"""Playback commands.
+
+Queue, skip and now-playing act on the Station — one shared broadcast — so a
+request made in any server changes what every server hears. Only /summon,
+/rejoin and /leave are per-guild, since those are about the connection.
+"""
 
 from __future__ import annotations
 
@@ -32,6 +37,10 @@ class MusicCog(commands.Cog, name="Music"):
         self.bot = bot
         self.cfg = bot.cfg
         self.db = bot.db
+
+    @property
+    def station(self):
+        return self.bot.station
 
     # ---------------------------------------------------------------- helpers
 
@@ -108,13 +117,13 @@ class MusicCog(commands.Cog, name="Music"):
             requester_name=interaction.user.display_name,
         )
         try:
-            position = player.enqueue(item, front=front)
+            position = self.station.enqueue(item, front=front)
         except ValueError as exc:
             await interaction.followup.send(embed=err_embed(str(exc)), ephemeral=True)
             return
 
         if play_now:
-            player.skip()
+            self.station.skip()
             verb = "Now playing"
         elif front:
             verb = "Up next"
@@ -126,9 +135,10 @@ class MusicCog(commands.Cog, name="Music"):
             + (f"\n{track.uploader}" if track.uploader else ""),
             verb,
         )
+        listeners = self.station.listener_count()
         embed.set_footer(
             text=f"{fmt_duration(track.duration)} • requested by "
-            f"{interaction.user.display_name}"
+            f"{interaction.user.display_name} • airing to {listeners} listener(s)"
         )
         await interaction.followup.send(embed=embed)
 
@@ -165,7 +175,7 @@ class MusicCog(commands.Cog, name="Music"):
             return
 
         lines: list[str] = []
-        for index, item in enumerate(player.queue, start=1):
+        for index, item in enumerate(self.station.queue, start=1):
             who = f" — {item.requester_name}" if item.requester_name else ""
             lines.append(
                 f"`{index:>2}.` **{truncate(item.track.title, 70)}** "
@@ -173,12 +183,12 @@ class MusicCog(commands.Cog, name="Music"):
             )
 
         header = "Request queue"
-        if player.current is not None:
-            header += f" • now: {truncate(player.current.track.title, 40)}"
+        if self.station.current is not None:
+            header += f" • now: {truncate(self.station.current.track.title, 40)}"
         pages = build_pages(header, lines, per_page=10, color=INFO)
         if not lines:
             pages[0].description = (
-                "_Queue is empty — shuffling the whole library._\n"
+                "_Queue is empty — the station is shuffling the library._\n"
                 "Add something with `/queue add` or `/playnext`."
             )
         view = Paginator(pages)
@@ -192,7 +202,7 @@ class MusicCog(commands.Cog, name="Music"):
                 embed=err_embed("Use this in a server."), ephemeral=True
             )
             return
-        count = player.clear_queue()
+        count = self.station.clear_queue()
         await interaction.response.send_message(
             embed=ok_embed(
                 f"Cleared **{count}** queued track(s). Shuffle play continues."
@@ -210,7 +220,7 @@ class MusicCog(commands.Cog, name="Music"):
                 embed=err_embed("Use this in a server."), ephemeral=True
             )
             return
-        item = player.remove_at(position)
+        item = self.station.remove_at(position)
         if item is None:
             await interaction.response.send_message(
                 embed=err_embed(f"Nothing at position **{position}**."), ephemeral=True
@@ -224,24 +234,25 @@ class MusicCog(commands.Cog, name="Music"):
 
     @app_commands.command(name="skip", description="Skip the current track")
     async def skip(self, interaction: discord.Interaction) -> None:
-        player = await self._player(interaction)
-        if player is None or not player.skip():
+        if not self.station.skip():
             await interaction.response.send_message(
                 embed=err_embed("Nothing is playing."), ephemeral=True
             )
             return
-        await interaction.response.send_message(embed=ok_embed("Skipped ⏭"))
+        await interaction.response.send_message(
+            embed=ok_embed("Skipped ⏭ — for every server tuned in.")
+        )
 
     @app_commands.command(name="nowplaying", description="What's playing right now")
     async def nowplaying(self, interaction: discord.Interaction) -> None:
-        player = await self._player(interaction)
-        if player is None or player.current is None:
+        item = self.station.current
+        if item is None:
             await interaction.response.send_message(
                 embed=err_embed(
-                    "Nothing is playing."
+                    "Nothing is on air right now."
                     + (
-                        "\nThe channel is empty, so the stream is paused."
-                        if player and player.idle_since
+                        "\nThe broadcast is paused because no one is listening."
+                        if self.station.listener_count() == 0
                         else ""
                     )
                 ),
@@ -249,30 +260,30 @@ class MusicCog(commands.Cog, name="Music"):
             )
             return
 
-        track = player.current.track
-        elapsed = player.elapsed
+        track = item.track
+        elapsed = self.station.elapsed
         total = track.duration or 0
         bar = progress_bar(elapsed / total if total else 0.0)
         embed = discord.Embed(
-            title="Now playing",
+            title="On air",
             description=f"**{truncate(track.title, 120)}**"
             + (f"\n{track.uploader}" if track.uploader else ""),
             color=OK,
         )
         embed.add_field(
-            name="​",
+            name="\u200b",
             value=f"{bar}\n`{fmt_duration(elapsed)} / {fmt_duration(total)}`",
             inline=False,
         )
         source = (
-            f"requested by {player.current.requester_name}"
-            if player.current.requester_name
+            f"requested by {item.requester_name}"
+            if item.requester_name
             else "shuffle"
         )
-        state = "paused (empty channel)" if player.paused_for_idle else "playing"
         embed.set_footer(
-            text=f"{source} • {state} • {len(player.queue)} queued • "
-            f"volume {int(player.volume * 100)}%"
+            text=f"{source} • {self.station.listener_count()} listener(s) across "
+            f"{len(self.bot.players)} server(s) • {len(self.station.queue)} queued "
+            f"• volume {int(self.station.volume * 100)}%"
         )
         embed.url = f"https://youtu.be/{track.video_id}"
         await interaction.response.send_message(embed=embed)
@@ -299,7 +310,7 @@ class MusicCog(commands.Cog, name="Music"):
         if player is None:
             await interaction.followup.send(embed=err_embed("Use this in a server."))
             return
-        count = await player.reshuffle()
+        count = await self.station.reshuffle()
         await interaction.followup.send(
             embed=ok_embed(f"Reshuffled **{count}** downloaded track(s) 🔀")
         )
@@ -317,7 +328,7 @@ class MusicCog(commands.Cog, name="Music"):
             return
         if percent is None:
             await interaction.response.send_message(
-                embed=ok_embed(f"Volume is **{int(player.volume * 100)}%**")
+                embed=ok_embed(f"Volume is **{int(self.station.volume * 100)}%**")
             )
             return
         if not self.cfg.is_dj(interaction.user):
@@ -326,7 +337,7 @@ class MusicCog(commands.Cog, name="Music"):
                 ephemeral=True,
             )
             return
-        value = await player.set_volume(percent / 100)
+        value = await self.station.set_volume(percent / 100)
         await interaction.response.send_message(
             embed=ok_embed(f"Volume set to **{int(value * 100)}%** 🔊")
         )
@@ -453,16 +464,27 @@ class MusicCog(commands.Cog, name="Music"):
         )
         embed.add_field(name="Voice", value=conn, inline=False)
         embed.add_field(
-            name="Playing",
+            name="On air",
             value=(
-                f"**{truncate(player.current.track.title, 60)}**"
-                if player.current
-                else ("waiting for downloads" if player.waiting_for_tracks else "idle")
+                f"**{truncate(self.station.current.track.title, 55)}**\n"
+                f"`{fmt_duration(self.station.elapsed)} / "
+                f"{fmt_duration(self.station.current.track.duration)}`"
+                if self.station.current
+                else (
+                    "waiting for downloads"
+                    if self.station.waiting_for_tracks
+                    else "paused — no listeners"
+                )
             ),
+            inline=False,
+        )
+        embed.add_field(name="Queue", value=str(len(self.station.queue)), inline=True)
+        embed.add_field(name="Shuffle bag", value=str(self.station.bag_size), inline=True)
+        embed.add_field(
+            name="Audience",
+            value=f"{self.station.listener_count()} across {len(self.bot.players)} server(s)",
             inline=True,
         )
-        embed.add_field(name="Queue", value=str(len(player.queue)), inline=True)
-        embed.add_field(name="Shuffle bag", value=str(player.bag_size), inline=True)
 
         active_ids = await self.db.resolve_active_playlist_ids()
         playlists = {row["id"]: row for row in await self.db.get_playlists()}

@@ -265,8 +265,7 @@ class LibraryCog(commands.Cog, name="Library"):
     )
 
     async def _reshuffle_all(self) -> None:
-        for player in self.bot.players.values():
-            await player.reshuffle()
+        await self.bot.station.reshuffle()
 
     @active.command(name="show", description="Which playlists are in rotation")
     async def active_show(self, interaction: discord.Interaction) -> None:

@@ -1,9 +1,14 @@
 # ytvc-bot
 
-A Discord bot that keeps YouTube playlists downloaded as local mp3s and streams them into
-a voice channel 24/7 on shuffle.
+A Discord bot that keeps YouTube playlists downloaded as local mp3s and broadcasts them
+into voice channels 24/7 on shuffle — **one station, every server in sync**.
+
+It behaves like a radio, not a jukebox: there is a single shared queue and a single
+playing track, so everyone tuned in hears the same song at the same moment. A skip in one
+server skips for everyone; a server joining mid-track seeks to the current position.
 
 - Tracks any number of playlists; the **bot owner** picks which are in rotation
+- The bot's Discord status shows the song currently on air
 - Downloads everything with `yt-dlp` and converts to mp3 with `ffmpeg`
 - Streams the **local files** — no per-play YouTube requests, no buffering
 - Shuffles forever, with a user request queue on top
@@ -101,7 +106,7 @@ at all in Docker or WSL where the bot can't see your browser.
 | `/playnext <song>` | Put it at the **top** of the queue |
 | `/queue add <song>` | Append to the queue |
 | `/queue list` · `/queue remove <n>` · `/queue clear` | Manage the queue |
-| `/skip` · `/nowplaying` · `/search <query>` · `/shuffle` | Transport |
+| `/skip` · `/nowplaying` · `/search <query>` · `/shuffle` | Transport (global — affects every server) |
 | `/summon` | **Pull the bot into your voice channel** |
 | `/rejoin` · `/status` · `/volume` | Connection and state |
 | `/active show` | Which playlists are in rotation |
@@ -141,14 +146,22 @@ automatically. Removing or disabling a playlist drops it from rotation with no d
 reference. With `RESTRICT_REQUESTS_TO_ACTIVE=true` (default), users can only request from
 what's in rotation; set it false to let them reach anything downloaded.
 
+**One broadcast.** A single *station* owns the clock, the queue and the shuffle bag; each
+guild is a *receiver* that plays whatever the station is airing. The station advances on
+the track's duration (or a skip), so servers stay aligned without talking to each other.
+A receiver that joins, reconnects, or drifts re-syncs by seeking to the station's current
+offset with `ffmpeg -ss`. The bot's presence is updated to the song title on every change.
+
 **Shuffle.** Tracks are drawn from a shuffled bag — every song plays once before any
 repeats, then it reshuffles with the last 25 pushed toward the back. Requests jump ahead
-of the bag.
+of the bag, and the queue is global: a request in any server is heard in all of them.
 
-**Empty channel.** When the last human leaves, playback pauses but the bot **stays
-connected**. After `IDLE_STOP_AFTER` seconds (default 5 min) it tears the ffmpeg process
-down entirely so idling is free — still without leaving. Position is remembered and
-resumed with `ffmpeg -ss` from ~2 seconds before the cut.
+**Empty channel.** When the last human leaves a server's channel, that receiver goes
+quiet after `IDLE_STOP_AFTER` seconds (default 5 min) — the ffmpeg process is torn down
+but the bot **stays connected**. Other servers keep hearing the broadcast. When someone
+returns, it re-joins the stream already in progress. If *every* server empties, the
+station holds at the end of the current track rather than burning through the library
+overnight.
 
 **Connection fallback.** On startup and every `WATCHDOG_INTERVAL` seconds it ensures it's
 connected, trying: the `/summon` channel → `VOICE_CHANNEL_ID` →

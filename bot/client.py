@@ -12,6 +12,7 @@ from .config import Config
 from .db import Database
 from .downloader import Downloader, parse_playlist_id, playlist_url
 from .player import GuildPlayer
+from .station import Station
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class MusicBot(commands.Bot):
         self.cfg = cfg
         self.db = Database(cfg.db_path)
         self.downloader = Downloader(cfg, self.db)
+        self.station = Station(self, cfg, self.db)
         self.players: dict[int, GuildPlayer] = {}
         self._sync_task: asyncio.Task | None = None
         if cfg.owner_ids:
@@ -55,6 +57,7 @@ class MusicBot(commands.Bot):
 
         await self._sync_commands()
 
+        await self.station.start()
         self._sync_task = self.loop.create_task(self._sync_loop(), name="library-sync")
 
     async def _sync_commands(self) -> None:
@@ -101,11 +104,6 @@ class MusicBot(commands.Bot):
         log.info("logged in as %s (%s)", self.user, getattr(self.user, "id", "?"))
         for guild in self.guilds:
             await self.ensure_player(guild)
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.listening, name="/play • /queue"
-            )
-        )
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self.ensure_player(guild)
@@ -113,6 +111,7 @@ class MusicBot(commands.Bot):
     async def close(self) -> None:
         if self._sync_task is not None:
             self._sync_task.cancel()
+        await self.station.stop()
         for player in list(self.players.values()):
             await player.stop()
         await self.db.close()
@@ -155,9 +154,10 @@ class MusicBot(commands.Bot):
 
     async def _on_new_tracks(self) -> None:
         """Fresh downloads land: fold them into the shuffle bag."""
-        for player in self.players.values():
-            if not player.queue and (player.waiting_for_tracks or player.bag_size == 0):
-                await player.reshuffle()
+        if not self.station.queue and (
+            self.station.waiting_for_tracks or self.station.bag_size == 0
+        ):
+            await self.station.reshuffle()
 
     async def _sync_loop(self) -> None:
         await self.wait_until_ready()
