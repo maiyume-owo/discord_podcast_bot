@@ -21,6 +21,26 @@ from .db import Database
 
 log = logging.getLogger(__name__)
 
+# Voice close codes that mean "this session is dead, start a fresh one".
+# 4006 = session no longer valid, 4009 = session timeout, 4014 = disconnected.
+STALE_SESSION_CODES = {4006, 4009, 4014}
+
+
+def _describe_error(exc: Exception) -> str:
+    """asyncio.TimeoutError and friends stringify to "", which logs as nothing."""
+    text = str(exc).strip()
+    if text:
+        return text
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timed out (no response from Discord voice)"
+    return type(exc).__name__
+
+
+def _is_stale_session(exc: Exception) -> bool:
+    if isinstance(exc, discord.ConnectionClosed) and exc.code in STALE_SESSION_CODES:
+        return True
+    return "already connected" in str(exc).lower()
+
 
 @dataclass(slots=True)
 class Track:
@@ -156,42 +176,75 @@ class GuildPlayer:
             if vc is not None and vc.is_connected() and channel is None:
                 return vc
 
-            for candidate in self._candidate_channels(channel):
-                try:
-                    vc = self.voice_client
-                    if vc is not None and vc.is_connected():
-                        await vc.move_to(candidate)
-                    else:
-                        vc = await candidate.connect(
-                            timeout=20.0, reconnect=True, self_deaf=True
-                        )
-                    self.active_channel_id = candidate.id
-                    self.last_connect_error = None
-                    self._notified_no_channel = False
-                    log.info(
-                        "[%s] connected to #%s", self.guild.name, candidate.name
-                    )
-                    await self.tune_in()
-                    return vc
-                except Exception as exc:  # noqa: BLE001 - try the next candidate
-                    self.last_connect_error = f"#{candidate.name}: {exc}"
-                    log.warning("could not join #%s: %s", candidate.name, exc)
-                    await self._force_cleanup()
-                    continue
+            candidates = self._candidate_channels(channel)
+            if not candidates:
+                self.last_connect_error = (
+                    "no voice channel is joinable (check Connect/Speak permissions)"
+                )
+                log.error("voice connect failed: %s", self.last_connect_error)
+                await self._notify_connect_failure()
+                return None
 
-            if not self._candidate_channels(channel):
-                self.last_connect_error = "no voice channel is joinable (check permissions)"
+            for candidate in candidates:
+                for attempt in (1, 2):
+                    try:
+                        vc = self.voice_client
+                        if vc is not None and vc.is_connected():
+                            await vc.move_to(candidate)
+                        else:
+                            # Never call connect() with a half-open client still
+                            # registered — Discord answers "Already connected".
+                            await self._force_cleanup()
+                            vc = await candidate.connect(
+                                timeout=20.0, reconnect=True, self_deaf=True
+                            )
+                        self.active_channel_id = candidate.id
+                        self.last_connect_error = None
+                        self._notified_no_channel = False
+                        log.info(
+                            "[%s] connected to #%s", self.guild.name, candidate.name
+                        )
+                        await self.tune_in()
+                        return vc
+                    except Exception as exc:  # noqa: BLE001 - try the next candidate
+                        reason = _describe_error(exc)
+                        self.last_connect_error = f"#{candidate.name}: {reason}"
+                        log.warning("could not join #%s: %s", candidate.name, reason)
+                        # A stale session poisons every later attempt, so always
+                        # tear down fully before moving on.
+                        await self._force_cleanup()
+                        if attempt == 1 and _is_stale_session(exc):
+                            log.info("stale voice session — retrying #%s", candidate.name)
+                            await asyncio.sleep(2)
+                            continue
+                        break
+
             log.error("voice connect failed: %s", self.last_connect_error)
             await self._notify_connect_failure()
             return None
 
     async def _force_cleanup(self) -> None:
-        vc = self.voice_client
-        if vc is not None and not vc.is_connected():
-            try:
-                await vc.disconnect(force=True)
-            except Exception:  # noqa: BLE001
-                pass
+        """Drop any voice client, connected or not, and let Discord release it.
+
+        discord.py can leave a client registered on the guild after a failed or
+        timed-out handshake; it still answers is_connected(), so a conditional
+        teardown skips it and every later connect fails with "Already
+        connected to a voice channel".
+        """
+        vc = self.guild.voice_client
+        if vc is None:
+            return
+        try:
+            await vc.disconnect(force=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            vc.cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+        self._playing_id = None
+        self._source = None
+        await asyncio.sleep(0.5)  # Discord needs a moment to free the session
 
     async def _notify_connect_failure(self) -> None:
         if self._notified_no_channel or not self.cfg.text_channel_id:
