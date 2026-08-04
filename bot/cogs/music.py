@@ -448,10 +448,10 @@ class MusicCog(commands.Cog, name="Music"):
             channel = player.channel
             listeners = player.human_count()
             conn = f"🔊 {channel.mention if channel else '?'} • {listeners} listener(s)"
-            if player.paused_for_idle:
-                conn += "\n⏸ paused (channel empty, staying connected)"
-            elif player.idle_since is not None:
-                conn += "\n💤 idle — stream torn down, holding the channel"
+            if listeners == 0:
+                conn += "\n⏸ silent — channel empty, holding the connection"
+            elif not player.is_playing_current():
+                conn += "\n📡 tuning in to the broadcast…"
         else:
             conn = "❌ not connected"
             if player.last_connect_error:
