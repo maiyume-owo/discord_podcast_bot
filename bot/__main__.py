@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 
 import discord
 
@@ -62,10 +63,53 @@ def load_dotenv_if_present() -> None:
     load_dotenv()
 
 
+def check_writable(cfg: Config) -> str | None:
+    """Return an actionable message if the data directory isn't writable.
+
+    In Docker this is the single most common startup failure: ./data was
+    created by root on the host, but the container runs as uid 1000, so SQLite
+    fails deep inside connect() with a bare "readonly database".
+    """
+    for path in (cfg.data_dir, cfg.audio_dir, cfg.db_path.parent):
+        probe = path / ".write-test"
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            uid, gid = os.getuid(), os.getgid()
+            try:
+                st = path.stat()
+                owner = f"owned by uid={st.st_uid} gid={st.st_gid}"
+            except OSError:
+                owner = "unreadable"
+            in_docker = Path("/.dockerenv").exists()
+            fix = (
+                f"On the host, run:  sudo chown -R {uid}:{gid} data"
+                if in_docker
+                else f"Run:  sudo chown -R {uid}:{gid} {path}"
+            )
+            return (
+                f"Cannot write to {path} ({exc.strerror}).\n"
+                f"  The directory is {owner}, but this process runs as "
+                f"uid={uid} gid={gid}.\n"
+                f"  {fix}"
+            )
+    return None
+
+
 async def amain() -> None:
     log = logging.getLogger("bot")
     cfg = Config.from_env()
-    cfg.ensure_dirs()
+    try:
+        cfg.ensure_dirs()
+    except OSError:
+        pass  # check_writable turns this into something actionable
+
+    problem = check_writable(cfg)
+    if problem:
+        log.error("%s", problem)
+        raise SystemExit(1)
 
     if ensure_opus():
         log.info("libopus loaded — voice encoding available")

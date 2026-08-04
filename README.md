@@ -116,8 +116,14 @@ docker compose logs -f
 Everything persists in `./data` on the host (mp3s, the SQLite library, the yt-dlp cache,
 `cookies.txt`), so rebuilds are free. The image bundles ffmpeg, libopus and deno.
 
-The container runs as uid **1000**; if your host `data/` is owned by someone else the bot
-can't write to it — `sudo chown -R 1000:1000 data` fixes that.
+The container runs as uid **1000**. If your host `data/` is owned by someone else (very
+easy if you ran anything with `sudo`), SQLite fails with *"attempt to write a readonly
+database"* and the container restart-loops. The bot detects this at startup and prints the
+exact `chown` to run:
+
+```bash
+docker compose down && sudo chown -R 1000:1000 data && docker compose up -d
+```
 
 | | |
 |---|---|
@@ -281,6 +287,7 @@ there) ends up root-owned, and a non-root bot silently can't read it.
 | Slash commands missing | `GUILD_IDS` unset → slow global sync, or the 403 above. |
 | Joins but silence | `libopus` missing, or no **Speak** permission. |
 | `/status` shows 0 downloaded | Sync still running; check `/playlist list` for a per-playlist error. |
+| `attempt to write a readonly database` | `data/` isn't writable by the bot's user. In Docker: `sudo chown -R 1000:1000 data`. Startup logs the exact command. |
 | `Requested format is not available` on every video | YouTube's "n" challenge needs a JS runtime. Install **deno** and `pip install yt-dlp-ejs` (the Docker image includes both). Startup logs which runtime it found. |
 | Playlist reads fine, downloads all fail | Usually an outdated `yt-dlp`: `docker compose build --no-cache`, or `pip install -U yt-dlp`. |
 | `Sign in to confirm you're not a bot` | YouTube wants cookies — run `/cookies guide`. Failed tracks auto-retry once cookies land. |
