@@ -32,6 +32,9 @@ Fill in `DISCORD_TOKEN`, `GUILD_IDS`, `VOICE_CHANNEL_ID`, `OWNER_IDS`.
 mkdir -p data && docker compose up -d --build
 ```
 
+Your `.env` can keep relative paths for bare-metal runs — compose overrides `DATA_DIR`
+and friends to `/data` so the mounted volume is always what's used.
+
 Then in Discord, as the owner:
 
 ```
@@ -97,6 +100,35 @@ them.
 > rate-limited or banned. The file is a live login session — it's stored `0600`, kept out
 > of git, and `/cookies` replies are ephemeral. Prefer copying it onto the host directly
 > over uploading it through Discord.
+
+---
+
+## Docker
+
+```bash
+docker compose up -d --build
+```
+
+```bash
+docker compose logs -f
+```
+
+Everything persists in `./data` on the host (mp3s, the SQLite library, the yt-dlp cache,
+`cookies.txt`), so rebuilds are free. The image bundles ffmpeg, libopus and deno.
+
+The container runs as uid **1000**; if your host `data/` is owned by someone else the bot
+can't write to it — `sudo chown -R 1000:1000 data` fixes that.
+
+| | |
+|---|---|
+| Update to latest code | `git pull && docker compose up -d --build` |
+| Restart | `docker compose restart` |
+| Stop | `docker compose down` |
+| Shell inside | `docker compose exec music-bot bash` |
+| Install cookies | copy to `./data/cookies.txt` on the **host** — no rebuild needed |
+
+`.dockerignore` keeps `data/` and `.venv/` out of the build context, so builds stay fast
+even with a 1.5 GB library.
 
 ---
 
