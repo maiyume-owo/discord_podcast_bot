@@ -10,6 +10,28 @@ ERR = 0xED4245
 INFO = 0x5865F2
 
 
+# What the bot actually needs: read/post in a text channel to answer commands,
+# plus join and stream in a voice channel. Nothing more.
+REQUIRED_PERMISSIONS = discord.Permissions(
+    view_channel=True,
+    send_messages=True,
+    embed_links=True,
+    connect=True,
+    speak=True,
+)
+
+# Both scopes are required: "bot" alone registers no slash commands.
+INVITE_SCOPES = ("bot", "applications.commands")
+
+
+def invite_url(application_id: int | str | None) -> str:
+    if not application_id:
+        return ""
+    return discord.utils.oauth_url(
+        application_id, permissions=REQUIRED_PERMISSIONS, scopes=INVITE_SCOPES
+    )
+
+
 def fmt_duration(seconds: float | int | None) -> str:
     if not seconds:
         return "--:--"

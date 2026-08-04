@@ -13,6 +13,7 @@ from .db import Database
 from .downloader import Downloader, parse_playlist_id, playlist_url
 from .player import GuildPlayer
 from .station import Station
+from .utils import invite_url
 
 log = logging.getLogger(__name__)
 
@@ -50,10 +51,12 @@ class MusicBot(commands.Bot):
         from .cogs.music import MusicCog
         from .cogs.library import LibraryCog
         from .cogs.cookies import CookiesCog
+        from .cogs.meta import MetaCog
 
         await self.add_cog(MusicCog(self))
         await self.add_cog(LibraryCog(self))
         await self.add_cog(CookiesCog(self))
+        await self.add_cog(MetaCog(self))
 
         await self._sync_commands()
 
@@ -76,16 +79,15 @@ class MusicBot(commands.Bot):
                 await self.tree.sync()
                 log.info("slash commands synced globally (can take up to an hour)")
         except discord.Forbidden:
-            app_id = self.application_id or "<your application id>"
+            link = invite_url(self.application_id) or "<set your application id>"
             log.error(
                 "Could not register slash commands (403 Missing Access).\n"
                 "  The bot is either not in the server, or was invited without the\n"
                 "  'applications.commands' scope. Re-invite it with BOTH scopes:\n"
-                "  https://discord.com/oauth2/authorize"
-                "?client_id=%s&scope=bot+applications.commands&permissions=3165184\n"
+                "  %s\n"
                 "  Also check that GUILD_IDS matches a server the bot is actually in.\n"
                 "  Continuing without slash commands.",
-                app_id,
+                link,
             )
         except discord.HTTPException as exc:
             log.error("Slash command sync failed (%s). Continuing.", exc)

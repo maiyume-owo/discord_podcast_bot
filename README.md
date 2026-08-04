@@ -51,7 +51,8 @@ Playback starts as soon as the first mp3 lands. `/status` shows progress through
    voice channel is empty.
 3. **OAuth2 → URL Generator**: scopes **`bot` *and* `applications.commands`** — both, or
    slash commands can't register and the bot is useless. Permissions: **Connect**,
-   **Speak**, **View Channel**, **Send Messages**, **Embed Links**.
+   **Speak**, **View Channel**, **Send Messages**, **Embed Links**. Once it's running,
+   `/invite` builds this link for you.
 4. Put your own user ID in `OWNER_IDS`. The application owner (or team members) counts
    automatically, so `OWNER_IDS` is only for adding *more* owners.
 
@@ -105,6 +106,8 @@ them.
 
 | Command | What it does |
 |---|---|
+| `/help` | What the bot does and every command you can run |
+| `/invite` | Generate an invite link with the right scopes and permissions |
 | `/play <song>` | Play a downloaded song **right now** |
 | `/playnext <song>` | Put it at the **top** of the queue |
 | `/queue add <song>` | Append to the queue |

@@ -4,9 +4,10 @@ One station picks what plays and when; every guild is a receiver tuned to it,
 so all servers hear the same song at the same moment — like a radio feed
 rather than independent jukeboxes.
 
-The station owns the clock. It advances on the track's duration (or a skip),
-independently of whether anyone is actually connected. Guilds join mid-track by
-seeking to the station's current offset.
+The station owns the clock: it advances on the track's duration (or a skip),
+and guilds join mid-track by seeking to its current offset. It keeps airing to
+whichever guilds are listening, but holds between tracks when nobody anywhere
+is (see IDLE_PAUSE) rather than burning through the library unheard.
 """
 
 from __future__ import annotations
