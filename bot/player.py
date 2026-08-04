@@ -195,8 +195,14 @@ class GuildPlayer:
                             # Never call connect() with a half-open client still
                             # registered — Discord answers "Already connected".
                             await self._force_cleanup()
+                            # reconnect=False on purpose: discord.py's internal
+                            # retry reuses the same voice session, so a 4006
+                            # ("session no longer valid") loops forever and
+                            # never reaches our handler. Letting it fail out
+                            # means we tear down and come back with a fresh
+                            # session; the watchdog covers mid-stream drops.
                             vc = await candidate.connect(
-                                timeout=20.0, reconnect=True, self_deaf=True
+                                timeout=20.0, reconnect=False, self_deaf=True
                             )
                         self.active_channel_id = candidate.id
                         self.last_connect_error = None
@@ -232,19 +238,25 @@ class GuildPlayer:
         connected to a voice channel".
         """
         vc = self.guild.voice_client
-        if vc is None:
-            return
+        if vc is not None:
+            try:
+                await vc.disconnect(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                vc.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+        # Tell the gateway we've left, even if no client object survived. A
+        # ghost session server-side is what makes every reconnect answer 4006,
+        # and only a voice state update clears it.
         try:
-            await vc.disconnect(force=True)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            vc.cleanup()
+            await self.guild.change_voice_state(channel=None)
         except Exception:  # noqa: BLE001
             pass
         self._playing_id = None
         self._source = None
-        await asyncio.sleep(0.5)  # Discord needs a moment to free the session
+        await asyncio.sleep(1.0)  # Discord needs a moment to free the session
 
     async def _notify_connect_failure(self) -> None:
         if self._notified_no_channel or not self.cfg.text_channel_id:

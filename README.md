@@ -287,7 +287,7 @@ there) ends up root-owned, and a non-root bot silently can't read it.
 | Slash commands missing | `GUILD_IDS` unset → slow global sync, or the 403 above. |
 | Joins but silence | `libopus` missing, or no **Speak** permission. |
 | `/status` shows 0 downloaded | Sync still running; check `/playlist list` for a per-playlist error. |
-| `WebSocket closed with 4006` / `Already connected to a voice channel` | A stale voice session. The bot force-drops the client and retries automatically. If it persists, `docker compose restart` — Discord may still hold a session from a previous run. |
+| `WebSocket closed with 4006` / `Already connected to a voice channel` | A stale voice session. The bot force-drops the client, clears the session via the gateway, and reconnects fresh. **If it persists, check nothing else is running the same token** — two instances (an old container, or a bare-metal run) invalidate each other's voice session and produce 4006 forever. `docker ps -a` and `pgrep -af "python -m bot"`. |
 | `attempt to write a readonly database` | `data/` isn't writable by the bot's user. In Docker: `sudo chown -R 1000:1000 data`. Startup logs the exact command. |
 | `Requested format is not available` on every video | YouTube's "n" challenge needs a JS runtime. Install **deno** and `pip install yt-dlp-ejs` (the Docker image includes both). Startup logs which runtime it found. |
 | Playlist reads fine, downloads all fail | Usually an outdated `yt-dlp`: `docker compose build --no-cache`, or `pip install -U yt-dlp`. |
