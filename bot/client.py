@@ -137,9 +137,6 @@ class MusicBot(commands.Bot):
             log.info("player started for guild %s", guild.name)
         return player
 
-    def get_player(self, guild: discord.Guild | None) -> GuildPlayer | None:
-        return self.players.get(guild.id) if guild else None
-
     async def on_voice_state_update(
         self,
         member: discord.Member,

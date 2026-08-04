@@ -16,7 +16,6 @@ from discord.ext import commands
 from ..downloader import parse_playlist_id, playlist_url
 from ..utils import (
     INFO,
-    OK,
     WARN,
     Paginator,
     build_pages,

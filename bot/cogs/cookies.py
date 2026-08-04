@@ -18,19 +18,6 @@ log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 
-BROWSERS = [
-    "firefox",
-    "chrome",
-    "chromium",
-    "brave",
-    "edge",
-    "opera",
-    "vivaldi",
-    "safari",
-    "whale",
-]
-
-
 CONSOLE_ONLY_HINT = (
     "**The login cookies are missing — and a `document.cookie` paste can never "
     "contain them.**\n\n"
@@ -192,7 +179,7 @@ class CookiesCog(commands.Cog, name="Cookies"):
         embed.add_field(
             name="Alternative · paste from DevTools",
             value=(
-                "`/cookies paste`, then use `F12` → **Network** → reload → click a "
+                "`/cookies paste`, then `F12` → **Network** → reload → click a "
                 "`www.youtube.com` request → **Request Headers** → right-click "
                 "`cookie:` → **Copy value**.\n"
                 "⚠️ Do **not** use `document.cookie` in the Console — the login "
@@ -240,10 +227,6 @@ class CookiesCog(commands.Cog, name="Cookies"):
 
         embed = discord.Embed(title="Cookie status", description=body, color=colour)
         embed.add_field(name="Path", value=f"`{info['path']}`", inline=False)
-        if info["browser"]:
-            embed.add_field(
-                name="Browser fallback", value=f"`{info['browser']}`", inline=False
-            )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------- test
@@ -325,59 +308,6 @@ class CookiesCog(commands.Cog, name="Cookies"):
         if await self._deny_non_owner(interaction):
             return
         await interaction.response.send_modal(CookiePasteModal(self))
-
-    # ---------------------------------------------------------------- browser
-
-    @group.command(
-        name="browser", description="Try importing cookies from a local browser"
-    )
-    @app_commands.describe(
-        browser="Browser installed on the machine running the bot",
-        profile="Optional profile name",
-    )
-    @app_commands.choices(
-        browser=[app_commands.Choice(name=b, value=b) for b in BROWSERS]
-    )
-    async def browser(
-        self,
-        interaction: discord.Interaction,
-        browser: app_commands.Choice[str],
-        profile: str | None = None,
-    ) -> None:
-        if await self._deny_non_owner(interaction):
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        ok, message = await self.dl.import_browser_cookies(browser.value, profile)
-        if not ok:
-            await interaction.followup.send(
-                embed=err_embed(
-                    f"{truncate(message, 400)}\n\n"
-                    "This only works if that browser is installed **on the same "
-                    "machine as the bot** and logged in. In Docker or WSL it "
-                    "usually can't see your browser at all — use "
-                    "`/cookies upload` instead (`/cookies guide`).",
-                    "Import failed",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        requeued = await self.bot.db.reset_failures()
-        ok_test, test_message = await self.dl.test_cookies()
-        embed = ok_embed(
-            f"{message}\nRe-queued **{requeued}** failed track(s).\n\n"
-            f"{'✅' if ok_test else '⚠️'} {test_message}",
-            "Cookies imported",
-        )
-        if not ok_test:
-            embed.color = WARN
-            embed.description += (
-                "\n\n_YouTube rotates cookies on open tabs, so browser imports "
-                "often fail. The private-window export in `/cookies guide` is "
-                "more reliable._"
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ------------------------------------------------------------------ clear
 

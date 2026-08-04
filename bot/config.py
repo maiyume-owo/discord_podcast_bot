@@ -95,7 +95,6 @@ class Config:
     # --- youtube ---
     seed_playlists: list[str]
     cookies_file: Path | None
-    cookies_from_browser: str | None
     audio_quality: str
     download_concurrency: int
     sync_on_start: bool
@@ -143,7 +142,6 @@ class Config:
             cache_dir=cache_dir,
             seed_playlists=_get_str_list("PLAYLISTS"),
             cookies_file=cookies_file,
-            cookies_from_browser=_get("COOKIES_FROM_BROWSER"),
             audio_quality=_get("AUDIO_QUALITY", "192"),
             download_concurrency=max(1, _get_int("DOWNLOAD_CONCURRENCY", 2)),
             sync_on_start=_get_bool("SYNC_ON_START", True),

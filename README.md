@@ -76,9 +76,13 @@ Run **`/cookies guide`** in Discord for the walkthrough. The short version:
 
 Step 2's order matters: YouTube rotates cookies on any open tab, which silently
 invalidates a normal export. Closing the private window stops the session being rotated
-out from under the bot. For the same reason `--cookies-from-browser`
-(`/cookies browser`) is unreliable for YouTube — it exists as a fallback, and can't work
-at all in Docker or WSL where the bot can't see your browser.
+out from under the bot. (For the same reason yt-dlp's `--cookies-from-browser` is
+unreliable for YouTube, so this bot doesn't offer it.)
+
+If you'd rather not install an extension, `/cookies paste` accepts the `cookie:` **request
+header** copied from `F12` → Network → a `www.youtube.com` request. Don't use
+`document.cookie` from the Console — the login cookies are HttpOnly and it can't read
+them.
 
 | Command | |
 |---|---|
@@ -86,7 +90,6 @@ at all in Docker or WSL where the bot can't see your browser.
 | `/cookies status` | Installed? how old? logged in? |
 | `/cookies test` | Ask YouTube for a video and see if it lets us through |
 | `/cookies upload <file>` | Attach a `cookies.txt` |
-| `/cookies browser <name>` | Best-effort import from a local browser |
 | `/cookies clear` | Delete the stored jar |
 
 > **Use a throwaway Google account.** Bulk downloading risks the account being
@@ -126,7 +129,7 @@ video id is scoped identically, so there's no way to request something that isn'
 
 | Command | What it does |
 |---|---|
-| `/cookies guide\|status\|test\|upload\|browser\|clear` | YouTube authentication |
+| `/cookies guide\|status\|test\|upload\|paste\|clear` | YouTube authentication |
 | `/playlist add <url>` | Track a playlist |
 | `/playlist remove <playlist> [delete_files]` | Stop tracking it |
 | `/playlist toggle <playlist> <enabled>` | Keep the files, pause syncing |
@@ -230,8 +233,8 @@ Set `DATA_DIR=./data` in `.env` (the Docker default `/data` isn't writable), the
 .venv/bin/python -m bot
 ```
 
-Run it as your normal user, not root — otherwise `data/` ends up root-owned. Bare-metal
-runs can skip the cookie file with `COOKIES_FROM_BROWSER=firefox`.
+Run it as your normal user, not root — otherwise `data/` (and any cookie file you drop
+there) ends up root-owned, and a non-root bot silently can't read it.
 
 ---
 

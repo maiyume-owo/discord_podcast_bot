@@ -16,7 +16,6 @@ from discord.ext import commands
 
 from ..player import GuildPlayer, QueueItem, Track
 from ..utils import (
-    ERR,
     INFO,
     OK,
     WARN,

@@ -112,7 +112,6 @@ class Downloader:
         self.on_new_tracks: Any = None  # optional async callback()
         # Set when YouTube demands sign-in; cleared once a download succeeds.
         self.bot_check_blocked = False
-        self.cookie_browser = cfg.cookies_from_browser
 
     # ------------------------------------------------------------ yt-dlp opts
 
@@ -128,9 +127,6 @@ class Downloader:
         }
         if self.cookies_available():
             opts["cookiefile"] = str(self.cfg.cookies_file)
-        elif self.cookie_browser:
-            spec = self.cookie_browser.split(":")
-            opts["cookiesfrombrowser"] = tuple(spec) + (None,) * (4 - len(spec))
         return opts
 
     def cookies_available(self) -> bool:
@@ -359,7 +355,6 @@ class Downloader:
             "age_hours": None,
             "youtube_cookies": 0,
             "auth_cookies": [],
-            "browser": self.cookie_browser,
             "blocked": self.bot_check_blocked,
         }
         if not (path and path.exists()):
@@ -465,42 +460,6 @@ class Downloader:
         self.bot_check_blocked = False
         log.info("installed new cookie jar (%s)", message)
         return True, message
-
-    async def import_browser_cookies(
-        self, browser: str, profile: str | None = None
-    ) -> tuple[bool, str]:
-        """Best-effort auto-extraction. Unreliable for YouTube, see /cookies guide."""
-        path = self.cfg.cookies_file
-        if path is None:
-            return False, "COOKIES_FILE is not configured."
-
-        def _extract() -> int:
-            from yt_dlp.cookies import extract_cookies_from_browser
-            from yt_dlp.utils import YoutubeDLCookieJar
-
-            jar = extract_cookies_from_browser(browser, profile)
-            keep = YoutubeDLCookieJar()
-            count = 0
-            for cookie in jar:
-                if "youtube.com" in cookie.domain or "google.com" in cookie.domain:
-                    keep.set_cookie(cookie)
-                    count += 1
-            path.parent.mkdir(parents=True, exist_ok=True)
-            keep.save(str(path))
-            path.chmod(0o600)
-            return count
-
-        try:
-            count = await asyncio.to_thread(_extract)
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
-        if count == 0:
-            return False, (
-                f"Found no YouTube cookies in **{browser}**. Are you logged in "
-                "in that browser, on this machine?"
-            )
-        self.bot_check_blocked = False
-        return True, f"Imported {count} cookie(s) from {browser}."
 
     async def clear_cookies(self) -> bool:
         path = self.cfg.cookies_file

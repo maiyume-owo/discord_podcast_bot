@@ -35,19 +35,12 @@ def check_js_runtime() -> str | None:
         (r for r in ("deno", "node", "quickjs", "bun") if shutil.which(r)), None
     )
     try:
-        import yt_dlp_ejs  # noqa: F401
+        import yt_dlp_ejs  # noqa: F401  (probed for availability, not used here)
 
         solver = True
     except ImportError:
         solver = False
-    if runtime and solver:
-        return runtime
-    missing = []
-    if not runtime:
-        missing.append("a JS runtime (install deno)")
-    if not solver:
-        missing.append("the solver (pip install yt-dlp-ejs)")
-    return None if missing else runtime
+    return runtime if (runtime and solver) else None
 
 
 def ensure_opus() -> bool:
