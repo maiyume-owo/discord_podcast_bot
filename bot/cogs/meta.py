@@ -26,17 +26,24 @@ OWNER_COMMANDS = {
     "playlist add",
     "playlist remove",
     "playlist toggle",
+}
+# Rotation is per server, so it is a server-level decision, not the bot owner's.
+DJ_COMMANDS = {
+    "volume",
+    "leave",
     "active set",
     "active add",
     "active remove",
     "active all",
 }
-DJ_COMMANDS = {"volume", "leave"}
 
 BLURBS = {
-    "everyone": "Anyone can use these. Requests are shared — see the note above.",
-    "dj": "Needs **Manage Server**, or a role listed in `DJ_ROLE_IDS`.",
-    "owner": "Bot owner only.",
+    "everyone": "Anyone can use these. They affect this server only.",
+    "dj": (
+        "Needs **Manage Server**, or a role listed in `DJ_ROLE_IDS`. Also this "
+        "server only."
+    ),
+    "owner": "Bot owner only — these change the library every server shares.",
 }
 
 
@@ -104,13 +111,14 @@ class MetaCog(commands.Cog, name="Meta"):
         embed = discord.Embed(
             title="📻 How this bot works",
             description=(
-                "It runs a **24/7 radio station**, not a per-server jukebox.\n\n"
-                "Every server hears **the same song at the same moment**, from one "
-                "shared queue. A skip or a request in any server changes what "
-                "everyone hears — and joining mid-song drops you in where the "
-                "broadcast already is.\n\n"
-                "Only songs already **downloaded** can be requested; `/play` "
-                "autocompletes from the library."
+                "It runs a **24/7 station for this server**.\n\n"
+                "Your queue, current song, skips and volume are **yours alone** — "
+                "other servers I'm in have their own, and nothing you do here "
+                "reaches them. Joining mid-song drops you in where this server's "
+                "playback already is.\n\n"
+                "The **library is shared**: one copy of the downloads and one set "
+                "of playlists in rotation, for every server. Only songs already "
+                "downloaded can be requested; `/play` autocompletes from it."
             ),
             color=INFO,
         )
@@ -132,9 +140,9 @@ class MetaCog(commands.Cog, name="Meta"):
         embed.add_field(
             name="Start here",
             value=(
-                "`/status` — what's on air and how the library is doing\n"
+                "`/status` — what this server is playing, plus library health\n"
                 "`/play <song>` — hear something now\n"
-                "`/summon` — pull the bot into your voice channel"
+                "`/join` — pull the bot into your voice channel"
             ),
             inline=False,
         )
@@ -177,11 +185,13 @@ class MetaCog(commands.Cog, name="Meta"):
             inline=False,
         )
         embed.add_field(
-            name="⚠️ One station, all servers",
+            name="Playback is per-server, the library is shared",
             value=(
-                "I broadcast the *same* stream everywhere I'm added, from one "
-                "shared queue — so anyone in a new server can skip and queue for "
-                "**your** listeners too. Only add me where you trust the members."
+                "Each server gets its own queue and its own current song, so a "
+                "new server can't skip or queue for **your** listeners. What is "
+                "shared is the library: anyone can play anything already "
+                "downloaded, and owners choose the playlists in rotation for "
+                "everyone."
             ),
             inline=False,
         )

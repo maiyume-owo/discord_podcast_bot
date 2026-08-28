@@ -1,7 +1,9 @@
 """Playlist tracking, rotation, and library maintenance.
 
 Permission model:
-  * bot owner  — which playlists are tracked, and which are in rotation
+  * bot owner  — which playlists are tracked, synced and downloaded (shared:
+                 one library on disk for every server)
+  * DJ         — which of those playlists this server plays from (per server)
   * everyone   — read-only views
 """
 
@@ -54,6 +56,32 @@ class LibraryCog(commands.Cog, name="Library"):
         )
         return True
 
+    async def _deny_non_dj(self, interaction: discord.Interaction) -> bool:
+        """True (and replies) if the caller can't change this server's rotation.
+
+        Rotation is per server now, so it's a server-level decision: Manage
+        Server or a DJ role. Which playlists *exist* is still the bot owner's
+        call, since those cost disk and downloads.
+        """
+        if interaction.guild is None:
+            await self._reply(
+                interaction, err_embed("Use this in a server."), ephemeral=True
+            )
+            return True
+        if self.cfg.is_dj(interaction.user) or await self.bot.is_bot_owner(
+            interaction.user
+        ):
+            return False
+        await self._reply(
+            interaction,
+            err_embed(
+                "Only **DJs** (Manage Server, or a role in `DJ_ROLE_IDS`) can "
+                "change what this server plays."
+            ),
+            ephemeral=True,
+        )
+        return True
+
     @staticmethod
     async def _reply(
         interaction: discord.Interaction, embed: discord.Embed, ephemeral: bool = False
@@ -100,7 +128,11 @@ class LibraryCog(commands.Cog, name="Library"):
             )
             return
 
-        active = set(await self.db.resolve_active_playlist_ids())
+        active = set(
+            await self.db.resolve_active_playlist_ids(interaction.guild.id)
+            if interaction.guild
+            else []
+        )
         lines: list[str] = []
         for row in rows:
             total, done = await self.db.playlist_counts(row["id"])
@@ -264,20 +296,32 @@ class LibraryCog(commands.Cog, name="Library"):
     )
 
     async def _reshuffle_all(self) -> None:
-        await self.bot.station.reshuffle()
+        """The tracked playlists changed, which affects every server."""
+        for station in self.bot.stations:
+            await station.reshuffle()
 
-    @active.command(name="show", description="Which playlists are in rotation")
+    async def _reshuffle_guild(self, interaction: discord.Interaction) -> None:
+        """This server picked a different rotation; nobody else is affected."""
+        player = await self.bot.ensure_player(interaction.guild)
+        await player.station.reshuffle()
+
+    @active.command(
+        name="show", description="Which playlists this server plays from"
+    )
     async def active_show(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        ids = await self.db.resolve_active_playlist_ids()
-        follow_all = await self.db.is_following_all()
+        if interaction.guild is None:
+            await interaction.followup.send(embed=err_embed("Use this in a server."))
+            return
+        ids = await self.db.resolve_active_playlist_ids(interaction.guild.id)
+        follow_all = await self.db.is_following_all(interaction.guild.id)
         rows = {row["id"]: row for row in await self.db.get_playlists()}
 
         if not ids:
             await interaction.followup.send(
                 embed=err_embed(
-                    "**Nothing is in rotation** — the selected playlists were "
-                    "removed or disabled. The owner can fix this with "
+                    "**Nothing is in rotation here** — the selected playlists "
+                    "were removed or disabled. A DJ can fix this with "
                     "`/active all` or `/active set`."
                 )
             )
@@ -292,15 +336,18 @@ class LibraryCog(commands.Cog, name="Library"):
         playable = len(await self.db.downloaded_ids(ids))
         embed = ok_embed(
             "\n".join(lines),
-            "In rotation" + (" (following all playlists)" if follow_all else ""),
+            f"In rotation in {interaction.guild.name}"
+            + (" (following all playlists)" if follow_all else ""),
         )
         embed.set_footer(text=f"{playable} downloaded track(s) in the shuffle pool")
         await interaction.followup.send(embed=embed)
 
-    @active.command(name="set", description="Play from one playlist only (owner)")
+    @active.command(
+        name="set", description="Play from one playlist only, here (DJ)"
+    )
     @app_commands.autocomplete(playlist=playlist_autocomplete)
     async def active_set(self, interaction: discord.Interaction, playlist: str) -> None:
-        if await self._deny_non_owner(interaction):
+        if await self._deny_non_dj(interaction):
             return
         await interaction.response.defer()
         row = await self.db.find_playlist(playlist)
@@ -316,12 +363,13 @@ class LibraryCog(commands.Cog, name="Library"):
             )
             return
 
-        await self.db.set_active_playlists([row["id"]])
-        await self._reshuffle_all()
+        await self.db.set_active_playlists(interaction.guild.id, [row["id"]])
+        await self._reshuffle_guild(interaction)
         playable = len(await self.db.downloaded_ids([row["id"]]))
         embed = ok_embed(
-            f"Now playing from **{truncate(row['title'] or row['id'], 80)}** only.\n"
-            f"{playable} downloaded track(s) in rotation.",
+            f"**{interaction.guild.name}** now plays from "
+            f"**{truncate(row['title'] or row['id'], 80)}** only.\n"
+            f"{playable} downloaded track(s) in rotation here.",
             "Rotation changed",
         )
         if playable == 0:
@@ -331,80 +379,89 @@ class LibraryCog(commands.Cog, name="Library"):
             )
         await interaction.followup.send(embed=embed)
 
-    @active.command(name="add", description="Add a playlist to the rotation (owner)")
+    @active.command(
+        name="add", description="Add a playlist to this server's rotation (DJ)"
+    )
     @app_commands.autocomplete(playlist=playlist_autocomplete)
     async def active_add(self, interaction: discord.Interaction, playlist: str) -> None:
-        if await self._deny_non_owner(interaction):
+        if await self._deny_non_dj(interaction):
             return
         await interaction.response.defer()
         row = await self.db.find_playlist(playlist)
         if row is None:
             await interaction.followup.send(embed=err_embed(f"No playlist `{playlist}`."))
             return
-        current = await self.db.resolve_active_playlist_ids()
+        current = await self.db.resolve_active_playlist_ids(interaction.guild.id)
         if row["id"] in current:
             await interaction.followup.send(
-                embed=err_embed("That playlist is already in rotation.")
+                embed=err_embed("That playlist is already in rotation here.")
             )
             return
         current.append(row["id"])
-        await self.db.set_active_playlists(current)
-        await self._reshuffle_all()
+        await self.db.set_active_playlists(interaction.guild.id, current)
+        await self._reshuffle_guild(interaction)
         await interaction.followup.send(
             embed=ok_embed(
-                f"Added **{truncate(row['title'] or row['id'], 70)}**.\n"
-                f"{len(current)} playlist(s) in rotation, "
+                f"Added **{truncate(row['title'] or row['id'], 70)}** in "
+                f"**{interaction.guild.name}**.\n"
+                f"{len(current)} playlist(s) in rotation here, "
                 f"{len(await self.db.downloaded_ids(current))} track(s) playable."
             )
         )
 
-    @active.command(name="remove", description="Drop a playlist from rotation (owner)")
+    @active.command(
+        name="remove", description="Drop a playlist from this server's rotation (DJ)"
+    )
     @app_commands.autocomplete(playlist=playlist_autocomplete)
     async def active_remove(
         self, interaction: discord.Interaction, playlist: str
     ) -> None:
-        if await self._deny_non_owner(interaction):
+        if await self._deny_non_dj(interaction):
             return
         await interaction.response.defer()
         row = await self.db.find_playlist(playlist)
         if row is None:
             await interaction.followup.send(embed=err_embed(f"No playlist `{playlist}`."))
             return
-        current = await self.db.resolve_active_playlist_ids()
+        current = await self.db.resolve_active_playlist_ids(interaction.guild.id)
         if row["id"] not in current:
             await interaction.followup.send(
-                embed=err_embed("That playlist isn't in rotation.")
+                embed=err_embed("That playlist isn't in rotation here.")
             )
             return
         current.remove(row["id"])
         if not current:
             await interaction.followup.send(
                 embed=err_embed(
-                    "That's the last one — the bot would have nothing to play. "
-                    "Use `/active set` to switch instead."
+                    "That's the last one — this server would have nothing to "
+                    "play. Use `/active set` to switch instead."
                 )
             )
             return
-        await self.db.set_active_playlists(current)
-        await self._reshuffle_all()
+        await self.db.set_active_playlists(interaction.guild.id, current)
+        await self._reshuffle_guild(interaction)
         await interaction.followup.send(
             embed=ok_embed(
-                f"Removed **{truncate(row['title'] or row['id'], 70)}** from rotation.\n"
-                f"{len(current)} playlist(s) left."
+                f"Removed **{truncate(row['title'] or row['id'], 70)}** from "
+                f"**{interaction.guild.name}**'s rotation.\n"
+                f"{len(current)} playlist(s) left here."
             )
         )
 
-    @active.command(name="all", description="Play from every enabled playlist (owner)")
+    @active.command(
+        name="all", description="Play from every enabled playlist, here (DJ)"
+    )
     async def active_all(self, interaction: discord.Interaction) -> None:
-        if await self._deny_non_owner(interaction):
+        if await self._deny_non_dj(interaction):
             return
         await interaction.response.defer()
-        await self.db.set_active_playlists(None)
-        await self._reshuffle_all()
-        ids = await self.db.resolve_active_playlist_ids()
+        await self.db.set_active_playlists(interaction.guild.id, None)
+        await self._reshuffle_guild(interaction)
+        ids = await self.db.resolve_active_playlist_ids(interaction.guild.id)
         await interaction.followup.send(
             embed=ok_embed(
-                f"Following **all {len(ids)} enabled playlist(s)** — "
+                f"**{interaction.guild.name}** now follows **all {len(ids)} "
+                f"enabled playlist(s)** — "
                 f"{len(await self.db.downloaded_ids(ids))} track(s) in rotation.\n"
                 "Newly added playlists join automatically."
             )

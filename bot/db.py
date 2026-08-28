@@ -58,6 +58,9 @@ CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);
 CREATE INDEX IF NOT EXISTS idx_pt_video ON playlist_tracks(video_id);
 """
 
+# Per guild: "active_playlists:<guild id>". The bare key is what installs from
+# before rotation was per-server used; it is still read as the starting point
+# for a guild that has never chosen, so upgrades keep playing what they played.
 ACTIVE_PLAYLISTS_KEY = "active_playlists"
 
 STATUS_PENDING = "pending"
@@ -306,15 +309,27 @@ class Database:
 
     # -------------------------------------------------- active playlist set
 
-    async def resolve_active_playlist_ids(self) -> list[str]:
-        """Which playlists the bot currently plays from.
+    @staticmethod
+    def _active_key(guild_id: int) -> str:
+        return f"{ACTIVE_PLAYLISTS_KEY}:{guild_id}"
 
-        Unset or "*" means every enabled playlist. Stored selections are
-        intersected with the enabled set, so removing or disabling a playlist
-        drops it from rotation without leaving a dangling reference.
+    async def _active_raw(self, guild_id: int) -> str | None:
+        """This guild's stored choice, else the pre-per-guild global one."""
+        raw = await self.get_setting(self._active_key(guild_id))
+        if raw is None:
+            raw = await self.get_setting(ACTIVE_PLAYLISTS_KEY)
+        return raw
+
+    async def resolve_active_playlist_ids(self, guild_id: int) -> list[str]:
+        """Which playlists this guild plays from.
+
+        Rotation is per server; the library it draws from is shared. Unset or
+        "*" means every enabled playlist. Stored selections are intersected
+        with the enabled set, so removing or disabling a playlist drops it from
+        every guild's rotation without leaving a dangling reference.
         """
         enabled = [row["id"] for row in await self.get_playlists(enabled_only=True)]
-        raw = await self.get_setting(ACTIVE_PLAYLISTS_KEY)
+        raw = await self._active_raw(guild_id)
         if not raw or raw == "*":
             return enabled
         try:
@@ -326,16 +341,19 @@ class Database:
         allowed = set(enabled)
         return [pid for pid in chosen if pid in allowed]
 
-    async def is_following_all(self) -> bool:
-        raw = await self.get_setting(ACTIVE_PLAYLISTS_KEY)
+    async def is_following_all(self, guild_id: int) -> bool:
+        raw = await self._active_raw(guild_id)
         return not raw or raw == "*"
 
-    async def set_active_playlists(self, playlist_ids: list[str] | None) -> None:
-        """None = follow every enabled playlist."""
+    async def set_active_playlists(
+        self, guild_id: int, playlist_ids: list[str] | None
+    ) -> None:
+        """None = follow every enabled playlist. Affects this guild only."""
+        key = self._active_key(guild_id)
         if playlist_ids is None:
-            await self.set_setting(ACTIVE_PLAYLISTS_KEY, "*")
+            await self.set_setting(key, "*")
         else:
-            await self.set_setting(ACTIVE_PLAYLISTS_KEY, json.dumps(playlist_ids))
+            await self.set_setting(key, json.dumps(playlist_ids))
 
     @staticmethod
     def _scope_clause(playlist_ids: Sequence[str] | None) -> tuple[str, list[str]]:

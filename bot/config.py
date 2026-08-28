@@ -78,8 +78,8 @@ class Config:
     # --- discord ---
     token: str
     guild_ids: list[int]
-    voice_channel_id: int | None
-    fallback_channel_ids: list[int]
+    # The 24/7 home channels: the only channels the bot ever joins on its own.
+    voice_channel_ids: list[int]
     text_channel_id: int | None
     dj_role_ids: list[int]
     owner_ids: list[int]
@@ -129,8 +129,8 @@ class Config:
         return cls(
             token=token,
             guild_ids=_get_id_list("GUILD_IDS"),
-            voice_channel_id=_get_opt_int("VOICE_CHANNEL_ID"),
-            fallback_channel_ids=_get_id_list("FALLBACK_VOICE_CHANNEL_IDS"),
+            voice_channel_ids=_get_id_list("VOICE_CHANNEL_IDS")
+            or _get_id_list("VOICE_CHANNEL_ID"),
             text_channel_id=_get_opt_int("TEXT_CHANNEL_ID"),
             dj_role_ids=_get_id_list("DJ_ROLE_IDS"),
             owner_ids=_get_id_list("OWNER_IDS"),
