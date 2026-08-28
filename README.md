@@ -1,20 +1,21 @@
 # ytvc-bot
 
-A Discord bot that keeps YouTube playlists downloaded as local mp3s and broadcasts them
-into voice channels 24/7 on shuffle — **one station, every server in sync**.
+A Discord bot that keeps YouTube playlists downloaded as local mp3s and plays them into
+voice channels 24/7 on shuffle — **one shared library, a separate station per server**.
 
-It behaves like a radio, not a jukebox: there is a single shared queue and a single
-playing track, so everyone tuned in hears the same song at the same moment. A skip in one
-server skips for everyone; a server joining mid-track seeks to the current position.
+Every server it's in runs its own station: its own queue, its own current track, its own
+skips and volume. Nothing one server does is heard in another. What they share is the
+library underneath — one set of playlists, one copy of the mp3s on disk — so every server
+can play everything that has been downloaded.
 
-- Tracks any number of playlists; the **bot owner** picks which are in rotation
-- The bot's Discord status shows the song currently on air
+- Tracks any number of playlists; **each server** picks which of them it plays
+- The bot's Discord status shows what the busiest server is playing
 - Downloads everything with `yt-dlp` and converts to mp3 with `ffmpeg`
 - Streams the **local files** — no per-play YouTube requests, no buffering
 - Shuffles forever, with a user request queue on top
 - **Pauses when the voice channel empties, but never leaves it**, and resumes from the
   exact position when someone comes back
-- Falls back through configured channels → any joinable channel; `/summon` overrides
+- Joins **only** the configured 24/7 channels on its own; anywhere else needs `/join`
 - Anyone can queue — but only songs already downloaded
 - One `docker compose up -d` to deploy
 
@@ -26,7 +27,7 @@ server skips for everyone; a server joining mid-track seeks to the current posit
 cp .env.example .env
 ```
 
-Fill in `DISCORD_TOKEN`, `GUILD_IDS`, `VOICE_CHANNEL_ID`, `OWNER_IDS`.
+Fill in `DISCORD_TOKEN`, `VOICE_CHANNEL_IDS`, `OWNER_IDS`.
 
 ```bash
 mkdir -p data && docker compose up -d --build
@@ -59,8 +60,10 @@ Playback starts as soon as the first mp3 lands. `/status` shows progress through
 4. Put your own user ID in `OWNER_IDS`. The application owner (or team members) counts
    automatically, so `OWNER_IDS` is only for adding *more* owners.
 
-With `GUILD_IDS` set, slash commands appear immediately; otherwise a global sync can take
-up to an hour.
+Slash commands are registered **per server, as the bot joins it**, so they appear within
+seconds — including in a server invited later. They're re-registered only when the command
+list actually changes, since Discord caps command writes per server per day. `GUILD_IDS`
+is optional and only pre-registers servers the bot hasn't joined yet.
 
 ---
 
@@ -150,10 +153,11 @@ even with a 1.5 GB library.
 | `/playnext <song>` | Put it at the **top** of the queue |
 | `/queue add <song>` | Append to the queue |
 | `/queue list` · `/queue remove <n>` · `/queue clear` | Manage the queue |
-| `/skip` · `/nowplaying` · `/search <query>` · `/shuffle` | Transport (global — affects every server) |
-| `/summon` | **Pull the bot into your voice channel** |
+| `/skip` · `/nowplaying` · `/shuffle` | Transport — this server only |
+| `/search <query>` | Search the shared library |
+| `/join` (alias `/summon`) | **Pull the bot into your voice channel** |
 | `/rejoin` · `/status` · `/volume` | Connection and state |
-| `/active show` | Which playlists are in rotation |
+| `/active show` | Which playlists this server plays from |
 | `/playlist list` · `/playlist view <playlist>` · `/stats` | Browse the library |
 
 The `song` field autocompletes and **only ever offers downloaded tracks** — a pasted
@@ -163,8 +167,11 @@ video id is scoped identically, so there's no way to request something that isn'
 
 | Command | What it does |
 |---|---|
-| `/volume <percent>` | Set volume 0–200 (persists) |
-| `/leave` | Disconnect; it auto-rejoins shortly |
+| `/volume <percent>` | Set this server's volume 0–200 (persists) |
+| `/leave` | Disconnect for a minute; then it rejoins its 24/7 channel |
+| `/active set <playlist>` | **Play from one playlist only, in this server** |
+| `/active add` · `/active remove` | Multi-playlist rotation for this server |
+| `/active all` | Follow every enabled playlist |
 
 ### Bot owner only
 
@@ -174,9 +181,6 @@ video id is scoped identically, so there's no way to request something that isn'
 | `/playlist add <url>` | Track a playlist |
 | `/playlist remove <playlist> [delete_files]` | Stop tracking it |
 | `/playlist toggle <playlist> <enabled>` | Keep the files, pause syncing |
-| `/active set <playlist>` | **Play from one playlist only** |
-| `/active add` · `/active remove` | Multi-playlist rotation |
-| `/active all` | Follow every enabled playlist |
 | `/sync [retry_failed]` | Re-read playlists and download |
 | `/prune` | Delete mp3s no longer in any playlist |
 
@@ -184,35 +188,62 @@ video id is scoped identically, so there's no way to request something that isn'
 
 ## How it works
 
-**Rotation.** The library can hold many playlists; only those the owner marks active are
-in the shuffle pool. `/active all` follows every enabled playlist and picks up new ones
-automatically. Removing or disabling a playlist drops it from rotation with no dangling
-reference. With `RESTRICT_REQUESTS_TO_ACTIVE=true` (default), users can only request from
-what's in rotation; set it false to let them reach anything downloaded.
+**Rotation.** The library can hold many playlists, and **each server picks which of them
+it plays** — that selection is per server, set by its DJs, and stored under its guild id.
+`/active all` follows every enabled playlist and picks up new ones automatically.
+Removing or disabling a playlist (owner-level, since it's the shared library) drops it
+from every server's rotation with no dangling reference. With
+`RESTRICT_REQUESTS_TO_ACTIVE=true` (default), users can only request from what's in
+*their* server's rotation; set it false to let them reach anything downloaded.
 
-**One broadcast.** A single *station* owns the clock, the queue and the shuffle bag; each
-guild is a *receiver* that plays whatever the station is airing. The station advances on
-the track's duration (or a skip), so servers stay aligned without talking to each other.
-A receiver that joins, reconnects, or drifts re-syncs by seeking to the station's current
-offset with `ffmpeg -ss`. The bot's presence is updated to the song title on every change.
+A server that has never chosen follows every enabled playlist. On upgrade from a version
+with one global rotation, that old selection is what servers start from.
 
-**Shuffle.** Tracks are drawn from a shuffled bag — every song plays once before any
-repeats, then it reshuffles with the last 25 pushed toward the back. Requests jump ahead
-of the bag, and the queue is global: a request in any server is heard in all of them.
+**A station per server.** Each guild gets a *station* — the clock, queue, shuffle bag and
+volume — paired with a *receiver* that owns the voice connection. The station advances on
+the track's duration (or a skip) and tells only its own receiver what to play, so servers
+never interfere with each other. A listener arriving mid-track hears it from the station's
+current offset (`ffmpeg -ss`), and the same seek repairs a reconnect or a drift.
 
-**Empty channel.** When the last human leaves a server's channel, that receiver goes
-quiet after `IDLE_STOP_AFTER` seconds (default 5 min) — the ffmpeg process is torn down
-but the bot **stays connected**. Other servers keep hearing the broadcast. When someone
-returns, it re-joins the stream already in progress. If *every* server empties, the
-station holds at the end of the current track rather than burning through the library
-overnight.
+What is shared is everything below playback: the downloaded files, which playlists are
+tracked and synced, and the disk they live on. Which of those playlists a server actually
+plays is its own choice, so `/search` and `/play` can offer different songs in different
+servers.
 
-**Connection fallback.** On startup and every `WATCHDOG_INTERVAL` seconds it ensures it's
-connected, trying: the `/summon` channel → `VOICE_CHANNEL_ID` →
-`FALLBACK_VOICE_CHANNEL_IDS` → any channel with Connect+Speak that isn't full, busiest
-first. If all fail it warns once in `TEXT_CHANNEL_ID`, retries every
-`RECONNECT_INTERVAL`, and anyone can `/summon` it. Being dragged between channels by a
-moderator is handled — it adopts the new channel.
+**Discord status.** A bot has only one presence, so it shows the track from the server
+with the most listeners, plus `(+N more server(s))` when others are playing too. It
+clears when nothing is playing anywhere.
+
+**Shuffle.** Each station draws from its own shuffled bag — every song plays once before
+any repeats, then it reshuffles with the last 25 pushed toward the back. Requests jump
+ahead of the bag. Two servers running at once are shuffling the same library
+independently, so they will normally be on different songs.
+
+**Empty channel.** When the last human leaves a server's channel, that station goes quiet
+after `IDLE_STOP_AFTER` seconds (default 5 min) — the ffmpeg process is torn down but the
+bot **stays connected**, and the station holds its place instead of burning through the
+library to an empty room. Other servers are unaffected. When someone returns, playback
+resumes with the next track.
+
+**Where it joins.** By itself, the bot only ever enters a channel listed in
+`VOICE_CHANNEL_IDS` — the 24/7 rooms. Several can be configured, in different servers;
+since it can hold only one channel per server, it picks the 24/7 room with listeners in
+it, config order breaking ties, and moves between them as people come and go. **If a
+server has none of them, it stays out of voice entirely** rather than picking a room
+itself.
+
+Every other channel needs a human: `/join` (or `/summon`) from inside the channel, or a
+moderator dragging the bot in — both are adopted the same way. That channel is held
+until it has been empty for `IDLE_STOP_AFTER`, then the bot returns to its 24/7 room, or
+disconnects if there isn't one. `/rejoin` sends it back to 24/7 duty immediately.
+
+**Staying there.** It joins its 24/7 channel as soon as it starts, and goes straight back
+if it's disconnected or kicked out of voice — it doesn't wait for the next watchdog tick,
+and it returns to the 24/7 room rather than to a guest channel it was kicked from. The
+one exception is `/leave`, which keeps it out for a minute so the command actually means
+something; `/join` or `/rejoin` cancels the wait. Every `WATCHDOG_INTERVAL` seconds it
+re-checks the connection as a backstop. If a 24/7 channel exists but can't be joined it
+warns once in `TEXT_CHANNEL_ID` and retries every `RECONNECT_INTERVAL`.
 
 **Sync.** At startup and every `SYNC_INTERVAL`: re-read each enabled playlist, reconcile
 the local index, then download whatever's missing, `DOWNLOAD_CONCURRENCY` at a time.
@@ -230,18 +261,18 @@ like when filled in.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OWNER_IDS` | — | Extra owners; the app owner always counts |
-| `DJ_ROLE_IDS` | — | Manage Server also counts |
-| `VOICE_CHANNEL_ID` | — | The 24/7 home channel |
-| `FALLBACK_VOICE_CHANNEL_IDS` | — | Tried in order before auto-discovery |
+| `OWNER_IDS` | — | Extra owners; the app owner always counts. Owners manage the shared library |
+| `DJ_ROLE_IDS` | — | Manage Server also counts. DJs set their own server's rotation and volume |
+| `VOICE_CHANNEL_IDS` | — | The 24/7 channels — the only ones joined automatically |
 | `TEXT_CHANNEL_ID` | — | Where connection warnings go |
-| `RESTRICT_REQUESTS_TO_ACTIVE` | `true` | Limit requests to playlists in rotation |
+| `RESTRICT_REQUESTS_TO_ACTIVE` | `true` | Limit requests to the server's own rotation |
 | `PLAYLISTS` | — | Seeds the library on first boot |
 | `COOKIES_FILE` | `/data/cookies.txt` | Ignored if the file doesn't exist |
 | `AUDIO_QUALITY` | `192` | mp3 kbps |
 | `DOWNLOAD_CONCURRENCY` | `2` | Higher gets you throttled |
 | `SYNC_INTERVAL` | `3600` | `0` disables periodic syncing |
 | `IDLE_PAUSE` / `IDLE_STOP_AFTER` | `true` / `300` | Empty-channel behaviour |
+| `VOLUME` | `0.5` | Starting level; `/volume` then persists per server |
 
 `/data` holds everything stateful: `audio/` (mp3s), `library.db`, `cache/`,
 `cookies.txt`. Back that up, or delete `audio/` + `library.db` to force a clean
@@ -284,7 +315,7 @@ there) ends up root-owned, and a non-root bot silently can't read it.
 | Symptom | Cause |
 |---|---|
 | `403 Missing Access` at startup | Invited without the `applications.commands` scope. Re-invite with both scopes. |
-| Slash commands missing | `GUILD_IDS` unset → slow global sync, or the 403 above. |
+| "This application has no commands" | The 403 above, or the bot hasn't finished starting. Kicking and re-inviting also re-registers. |
 | Joins but silence | `libopus` missing, or no **Speak** permission. |
 | `/status` shows 0 downloaded | Sync still running; check `/playlist list` for a per-playlist error. |
 | `WebSocket closed with 4006` / `Already connected to a voice channel` | A stale voice session. The bot force-drops the client, clears the session via the gateway, and reconnects fresh. **If it persists, check nothing else is running the same token** — two instances (an old container, or a bare-metal run) invalidate each other's voice session and produce 4006 forever. `docker ps -a` and `pgrep -af "python -m bot"`. |

@@ -1,13 +1,14 @@
-"""The broadcast.
+"""What plays, and when — one station per server.
 
-One station picks what plays and when; every guild is a receiver tuned to it,
-so all servers hear the same song at the same moment — like a radio feed
-rather than independent jukeboxes.
+Each guild gets its own station: its own queue, shuffle bag, clock and volume.
+A skip or a request in one server changes nothing in any other. What *is*
+shared is everything below playback — the library, the playlists in rotation
+and the downloads — because those are one copy on disk for every server.
 
 The station owns the clock: it advances on the track's duration (or a skip),
-and guilds join mid-track by seeking to its current offset. It keeps airing to
-whichever guilds are listening, but holds between tracks when nobody anywhere
-is (see IDLE_PAUSE) rather than burning through the library unheard.
+and a listener joining mid-track hears it from the station's current offset.
+It holds between tracks while its own guild has nobody listening (see
+IDLE_PAUSE) rather than burning through the library unheard.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ import logging
 import random
 import time
 from collections import deque
-
-import discord
 
 from .config import Config
 from .db import Database
@@ -32,10 +31,13 @@ DEFAULT_TRACK_SECONDS = 300
 
 
 class Station:
-    def __init__(self, bot, cfg: Config, db: Database) -> None:
+    def __init__(self, bot, cfg: Config, db: Database, player) -> None:
         self.bot = bot
         self.cfg = cfg
         self.db = db
+        # The one receiver this station plays to. Guild-scoped from here down.
+        self.player = player
+        self.guild = player.guild
 
         self.queue: deque[QueueItem] = deque()
         self.current: QueueItem | None = None
@@ -49,18 +51,27 @@ class Station:
         self._skip = asyncio.Event()
         self._listeners = asyncio.Event()
         self._task: asyncio.Task | None = None
-        self._presence: str | None = None
 
     # ------------------------------------------------------------- lifecycle
 
+    @property
+    def _volume_key(self) -> str:
+        return f"volume:{self.guild.id}"
+
     async def start(self) -> None:
-        stored = await self.db.get_setting("volume")
+        # This guild's saved level, else the level from before volume went
+        # per-guild, else VOLUME from the environment.
+        stored = await self.db.get_setting(self._volume_key) or await self.db.get_setting(
+            "volume"
+        )
         if stored:
             try:
                 self.volume = max(0.0, min(2.0, float(stored)))
             except ValueError:
                 pass
-        self._task = self.bot.loop.create_task(self._run(), name="station")
+        self._task = self.bot.loop.create_task(
+            self._run(), name=f"station-{self.guild.id}"
+        )
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -74,10 +85,11 @@ class Station:
         return max(0.0, time.monotonic() - self.started_at)
 
     def listener_count(self) -> int:
-        return sum(p.human_count() for p in self.bot.players.values())
+        """Humans hearing *this* station."""
+        return self.player.human_count()
 
     def notify_listeners(self) -> None:
-        """Called by receivers when their voice channel population changes."""
+        """Called by the receiver when its voice channel population changes."""
         if not self.cfg.idle_pause or self.listener_count() > 0:
             self._listeners.set()
         else:
@@ -86,14 +98,16 @@ class Station:
     # ------------------------------------------------------------ track pick
 
     async def _refill_bag(self) -> None:
-        self.active_playlist_ids = await self.db.resolve_active_playlist_ids()
+        self.active_playlist_ids = await self.db.resolve_active_playlist_ids(
+            self.guild.id
+        )
         ids = await self.db.downloaded_ids(self.active_playlist_ids)
         random.shuffle(ids)
         if len(ids) > len(self._recent):
             recent = set(self._recent)
             ids = [i for i in ids if i not in recent] + [i for i in ids if i in recent]
         self._bag = ids
-        log.info("reshuffled %d track(s)", len(ids))
+        log.info("[%s] reshuffled %d track(s)", self.guild.name, len(ids))
 
     async def reshuffle(self) -> int:
         await self._refill_bag()
@@ -138,13 +152,19 @@ class Station:
             try:
                 if self.cfg.idle_pause:
                     self.notify_listeners()
-                    # Hold the broadcast between tracks while nobody listens,
+                    # Hold between tracks while nobody in this guild listens,
                     # so an empty night doesn't burn through the library.
-                    await self._listeners.wait()
+                    if not self._listeners.is_set():
+                        # Genuinely idle, not just between tracks: stop
+                        # claiming to play. Back-to-back tracks skip this, so
+                        # the presence isn't cleared and re-set every song.
+                        await self.bot.refresh_presence()
+                        await self._listeners.wait()
 
                 item = await self._next_item()
                 if item is None:
                     self.waiting_for_tracks = True
+                    await self.bot.refresh_presence()
                     await asyncio.sleep(15)
                     continue
                 self.waiting_for_tracks = False
@@ -152,19 +172,21 @@ class Station:
                 self.current = item
                 self.started_at = time.monotonic()
                 self._skip.clear()
-                log.info("station now playing: %s", item.track.title)
+                log.info("[%s] now playing: %s", self.guild.name, item.track.title)
                 await self.db.bump_play(item.track.video_id)
                 self._recent.append(item.track.video_id)
 
                 await self._broadcast()
-                await self._set_presence(item.track.title)
+                # Presence is one status for the whole bot, so it is decided
+                # across stations rather than by whichever one started last.
+                await self.bot.refresh_presence()
                 await self._hold(item)
 
                 self.current = None
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - the broadcast must never die
-                log.exception("station loop error")
+            except Exception:  # noqa: BLE001 - one guild's station must never die
+                log.exception("[%s] station loop error", self.guild.name)
                 await asyncio.sleep(5)
 
     async def _hold(self, item: QueueItem) -> None:
@@ -177,25 +199,11 @@ class Station:
             pass
 
     async def _broadcast(self) -> None:
-        """Start the current track on every tuned-in receiver."""
-        for player in list(self.bot.players.values()):
-            try:
-                await player.tune_in()
-            except Exception:  # noqa: BLE001 - one bad guild must not stop the rest
-                log.exception("failed to start playback in guild %s", player.guild.id)
-
-    async def _set_presence(self, title: str) -> None:
-        if title == self._presence:
-            return
-        self._presence = title
+        """Start the current track on this station's receiver."""
         try:
-            await self.bot.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.listening, name=title[:128]
-                )
-            )
-        except discord.HTTPException as exc:
-            log.debug("presence update failed: %s", exc)
+            await self.player.tune_in()
+        except Exception:  # noqa: BLE001 - a bad track must not kill the loop
+            log.exception("[%s] failed to start playback", self.guild.name)
 
     # -------------------------------------------------------------- controls
 
@@ -207,9 +215,8 @@ class Station:
 
     async def set_volume(self, value: float) -> float:
         self.volume = max(0.0, min(2.0, value))
-        for player in self.bot.players.values():
-            player.apply_volume(self.volume)
-        await self.db.set_setting("volume", str(self.volume))
+        self.player.apply_volume(self.volume)
+        await self.db.set_setting(self._volume_key, str(self.volume))
         return self.volume
 
     def enqueue(self, item: QueueItem, front: bool = False) -> int:

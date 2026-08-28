@@ -5,6 +5,7 @@ services:
     container_name: ytvc-bot
     restart: unless-stopped
     env_file: .env
+
     environment:
       # These MUST win over whatever .env says. A bare-metal .env normally uses
       # relative paths (./data), which inside the container would resolve to
@@ -15,12 +16,20 @@ services:
       AUDIO_DIR: /data/audio
       DB_PATH: /data/library.db
       COOKIES_FILE: /data/cookies.txt
+
     volumes:
       # mp3s, sqlite library, yt-dlp cache and cookies.txt all live here
       - ./data:/data
+
     stop_grace_period: 30s
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  default:
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
